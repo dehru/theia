@@ -45,7 +45,9 @@ export class NsfwFileSystemWatcherServer implements FileSystemWatcherServer {
     protected readonly watchers = new Map<number, Disposable>();
     protected readonly watcherOptions = new Map<number, WatcherOptions>();
 
-    protected readonly toDispose = new DisposableCollection();
+    protected readonly toDispose = new DisposableCollection(
+        Disposable.create(() => this.setClient(undefined))
+    );
 
     protected changes = new FileChangeCollection();
 
@@ -76,28 +78,28 @@ export class NsfwFileSystemWatcherServer implements FileSystemWatcherServer {
         const watcherId = this.watcherSequence++;
         const basePath = FileUri.fsPath(uri);
         this.debug('Starting watching:', basePath);
+        const toDisposeWatcher = new DisposableCollection();
+        this.watchers.set(watcherId, toDisposeWatcher);
+        toDisposeWatcher.push(Disposable.create(() => this.watchers.delete(watcherId)));
         if (fs.existsSync(basePath)) {
-            await this.start(watcherId, basePath, options);
+            this.start(watcherId, basePath, options, toDisposeWatcher);
         } else {
-            const disposable = new DisposableCollection();
+            const toClearTimer = new DisposableCollection();
             const timer = setInterval(() => {
                 if (fs.existsSync(basePath)) {
-                    disposable.dispose();
+                    toClearTimer.dispose();
                     this.pushAdded(watcherId, basePath);
-                    this.start(watcherId, basePath, options);
+                    this.start(watcherId, basePath, options, toDisposeWatcher);
                 }
             }, 500);
-            disposable.push(Disposable.create(() => {
-                this.watchers.delete(watcherId);
-                clearInterval(timer);
-            }));
-            this.toDispose.push(disposable);
-            return watcherId;
+            toClearTimer.push(Disposable.create(() => clearInterval(timer)));
+            toDisposeWatcher.push(toClearTimer);
         }
+        this.toDispose.push(toDisposeWatcher);
         return watcherId;
     }
 
-    protected async start(watcherId: number, basePath: string, rawOptions?: WatchOptions): Promise<void> {
+    protected async start(watcherId: number, basePath: string, rawOptions: WatchOptions | undefined, toDisposeWatcher: DisposableCollection): Promise<void> {
         const options: WatchOptions = {
             ignored: [],
             ...rawOptions
@@ -106,7 +108,7 @@ export class NsfwFileSystemWatcherServer implements FileSystemWatcherServer {
             this.debug('Files ignored for watching', options.ignored);
         }
 
-        const watcher: nsfw.NSFW = await nsfw(fs.realpathSync(basePath), (events: nsfw.ChangeEvent[]) => {
+        let watcher: nsfw.NSFW | undefined = await nsfw(fs.realpathSync(basePath), (events: nsfw.ChangeEvent[]) => {
             for (const event of events) {
                 if (event.action === nsfw.actions.CREATED) {
                     this.pushAdded(watcherId, paths.join(event.directory, event.file!));
@@ -125,18 +127,27 @@ export class NsfwFileSystemWatcherServer implements FileSystemWatcherServer {
         });
         await watcher.start();
         this.options.info('Started watching:', basePath);
-        const disposable = Disposable.create(() => {
-            this.watcherOptions.delete(watcherId);
-            this.watchers.delete(watcherId);
+        if (toDisposeWatcher.disposed) {
             this.debug('Stopping watching:', basePath);
-            watcher.stop();
+            await watcher.stop();
+            // remove a reference to nsfw otherwise GC cannot collect it
+            watcher = undefined;
             this.options.info('Stopped watching:', basePath);
-        });
+            return;
+        }
+        toDisposeWatcher.push(Disposable.create(async () => {
+            this.watcherOptions.delete(watcherId);
+            if (watcher) {
+                this.debug('Stopping watching:', basePath);
+                await watcher.stop();
+                // remove a reference to nsfw otherwise GC cannot collect it
+                watcher = undefined;
+                this.options.info('Stopped watching:', basePath);
+            }
+        }));
         this.watcherOptions.set(watcherId, {
             ignored: options.ignored.map(pattern => new Minimatch(pattern))
         });
-        this.watchers.set(watcherId, disposable);
-        this.toDispose.push(disposable);
     }
 
     unwatchFileChanges(watcherId: number): Promise<void> {
@@ -148,7 +159,10 @@ export class NsfwFileSystemWatcherServer implements FileSystemWatcherServer {
         return Promise.resolve();
     }
 
-    setClient(client: FileSystemWatcherClient) {
+    setClient(client: FileSystemWatcherClient | undefined) {
+        if (client && this.toDispose.disposed) {
+            return;
+        }
         this.client = client;
     }
 

@@ -16,7 +16,7 @@
 
 import * as fs from 'fs-extra';
 import * as Path from 'path';
-import { injectable, inject } from 'inversify';
+import { injectable, inject, postConstruct } from 'inversify';
 import { git } from 'dugite-extra/lib/core/git';
 import { push } from 'dugite-extra/lib/command/push';
 import { pull } from 'dugite-extra/lib/command/pull';
@@ -35,14 +35,17 @@ import { IStatusResult, IAheadBehind, AppFileStatus, WorkingDirectoryStatus as D
 import { Branch as DugiteBranch } from 'dugite-extra/lib/model/branch';
 import { Commit as DugiteCommit, CommitIdentity as DugiteCommitIdentity } from 'dugite-extra/lib/model/commit';
 import { ILogger } from '@theia/core';
+import { Deferred } from '@theia/core/lib/common/promise-util';
 import * as strings from '@theia/core/lib/common/strings';
 import {
     Git, GitUtils, Repository, WorkingDirectoryStatus, GitFileChange, GitFileStatus, Branch, Commit,
-    CommitIdentity, GitResult, CommitWithChanges, GitFileBlame, CommitLine, GitError
+    CommitIdentity, GitResult, CommitWithChanges, GitFileBlame, CommitLine, GitError, Remote
 } from '../common';
 import { GitRepositoryManager } from './git-repository-manager';
 import { GitLocator } from './git-locator/git-locator-protocol';
 import { GitExecProvider } from './git-exec-provider';
+import { GitEnvProvider } from './env/git-env-provider';
+import { GitInit } from './init/git-init';
 
 /**
  * Parsing and converting raw Git output into Git model instances.
@@ -111,7 +114,7 @@ export enum CommitPlaceholders {
     SHORT_HASH = '%h',
     AUTHOR_EMAIL = '%aE',
     AUTHOR_NAME = '%aN',
-    AUTHOR_DATE = '%ad',
+    AUTHOR_DATE = '%aI',
     AUTHOR_RELATIVE_DATE = '%ar',
     SUBJECT = '%s',
     BODY = '%b'
@@ -141,14 +144,11 @@ export class CommitDetailsParser extends OutputParser<CommitWithChanges> {
         const chunks = this.split(input, delimiter);
         const changes: CommitWithChanges[] = [];
         for (const chunk of chunks) {
-            const [sha, email, name, timeAsString, authorDateRelative, summary, body, rawChanges] = chunk.trim().split(CommitDetailsParser.ENTRY_DELIMITER);
-            const timestamp = parseInt(timeAsString, 10);
+            const [sha, email, name, timestamp, authorDateRelative, summary, body, rawChanges] = chunk.trim().split(CommitDetailsParser.ENTRY_DELIMITER);
             const fileChanges = this.nameStatusParser.parse(repositoryUri, (rawChanges || '').trim());
             changes.push({
                 sha,
-                author: {
-                    timestamp, email, name
-                },
+                author: { timestamp, email, name },
                 authorDateRelative,
                 summary,
                 body,
@@ -202,8 +202,7 @@ export class GitBlameParser {
                     author: {
                         name: entry.author,
                         email: entry.authorMail,
-                        timestamp: entry.authorTime,
-                        tzOffset: entry.authorTz,
+                        timestamp: entry.authorTime ? new Date(entry.authorTime * 1000).toISOString() : '',
                     },
                     summary: entry.summary,
                     body: await commitBody(sha)
@@ -235,10 +234,6 @@ export namespace GitBlameParser {
         author?: string,
         authorMail?: string,
         authorTime?: number,
-        /**
-         * Timezone offset, e.g. UTC/GMT+2 === 200
-         */
-        authorTz?: number,
         summary?: string,
     }
 
@@ -264,9 +259,7 @@ export namespace GitBlameParser {
             const matches = rest.match(/(<(.*)>)/);
             entry.authorMail = matches ? matches[2] : rest;
         } else if (firstPart === 'author-time') {
-            entry.authorTime = parseInt(parts[1], 10) * 1000;
-        } else if (firstPart === 'author-tz') {
-            entry.authorTz = parseInt(parts[1], 10);
+            entry.authorTime = parseInt(parts[1], 10);
         } else if (firstPart === 'summary') {
             let summary = parts.slice(1).join(' ');
             if (summary.startsWith('"') && summary.endsWith('"')) {
@@ -313,19 +306,42 @@ export class DugiteGit implements Git {
     @inject(GitExecProvider)
     protected readonly execProvider: GitExecProvider;
 
+    @inject(GitEnvProvider)
+    protected readonly envProvider: GitEnvProvider;
+
+    @inject(GitInit)
+    protected readonly gitInit: GitInit;
+
+    protected ready: Deferred<void> = new Deferred();
+    protected gitEnv: Deferred<Object> = new Deferred();
+
+    @postConstruct()
+    protected init(): void {
+        this.envProvider.getEnv().then(env => this.gitEnv.resolve(env));
+        this.gitInit.init()
+            .catch(err => {
+                this.logger.error('An error occurred during the Git initialization.', err);
+                this.ready.resolve();
+            })
+            .then(() => this.ready.resolve());
+    }
+
     dispose(): void {
         this.locator.dispose();
         this.execProvider.dispose();
+        this.gitInit.dispose();
     }
 
     async clone(remoteUrl: string, options: Git.Options.Clone): Promise<Repository> {
+        await this.ready.promise;
         const { localUri, branch } = options;
-        const exec = await this.execProvider.exec();
-        await clone(remoteUrl, this.getFsPath(localUri), { branch }, { exec });
+        const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
+        await clone(remoteUrl, this.getFsPath(localUri), { branch }, { exec, env });
         return { localUri };
     }
 
     async repositories(workspaceRootUri: string, options: Git.Options.Repositories): Promise<Repository[]> {
+        await this.ready.promise;
         const workspaceRootPath = this.getFsPath(workspaceRootUri);
         const repositories: Repository[] = [];
         const containingPath = await this.resolveContainingPath(workspaceRootPath);
@@ -351,27 +367,30 @@ export class DugiteGit implements Git {
     }
 
     async status(repository: Repository): Promise<WorkingDirectoryStatus> {
+        await this.ready.promise;
         const repositoryPath = this.getFsPath(repository);
-        const exec = await this.execProvider.exec();
-        const dugiteStatus = await getStatus(repositoryPath, true, this.limit, { exec });
+        const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
+        const dugiteStatus = await getStatus(repositoryPath, true, this.limit, { exec, env });
         return this.mapStatus(dugiteStatus, repository);
     }
 
     async add(repository: Repository, uri: string | string[]): Promise<void> {
+        await this.ready.promise;
         const paths = (Array.isArray(uri) ? uri : [uri]).map(FileUri.fsPath);
-        const exec = await this.execProvider.exec();
+        const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
         return this.manager.run(repository, () =>
-            stage(this.getFsPath(repository), paths, { exec })
+            stage(this.getFsPath(repository), paths, { exec, env })
         );
     }
 
     async unstage(repository: Repository, uri: string | string[], options?: Git.Options.Unstage): Promise<void> {
+        await this.ready.promise;
         const paths = (Array.isArray(uri) ? uri : [uri]).map(FileUri.fsPath);
         const treeish = options && options.treeish ? options.treeish : undefined;
         const where = options && options.reset ? options.reset : undefined;
-        const exec = await this.execProvider.exec();
+        const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
         return this.manager.run(repository, () =>
-            unstage(this.getFsPath(repository), paths, treeish, where, { exec })
+            unstage(this.getFsPath(repository), paths, treeish, where, { exec, env })
         );
     }
 
@@ -380,67 +399,72 @@ export class DugiteGit implements Git {
     async branch(repository: Repository, options: Git.Options.BranchCommand.Create | Git.Options.BranchCommand.Rename | Git.Options.BranchCommand.Delete): Promise<void>;
     // tslint:disable-next-line:no-any
     async branch(repository: any, options: any): Promise<void | undefined | Branch | Branch[]> {
-        const exec = await this.execProvider.exec();
+        await this.ready.promise;
+        const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
         const repositoryPath = this.getFsPath(repository);
         if (GitUtils.isBranchList(options)) {
             if (options.type === 'current') {
-                const currentBranch = await listBranch(repositoryPath, options.type, { exec });
+                const currentBranch = await listBranch(repositoryPath, options.type, { exec, env });
                 return currentBranch ? this.mapBranch(currentBranch) : undefined;
             }
-            const branches = await listBranch(repositoryPath, options.type, { exec });
+            const branches = await listBranch(repositoryPath, options.type, { exec, env });
             return Promise.all(branches.map(branch => this.mapBranch(branch)));
         }
         return this.manager.run(repository, () => {
             if (GitUtils.isBranchCreate(options)) {
-                return createBranch(repositoryPath, options.toCreate, { startPoint: options.startPoint }, { exec });
+                return createBranch(repositoryPath, options.toCreate, { startPoint: options.startPoint }, { exec, env });
             }
             if (GitUtils.isBranchRename(options)) {
-                return renameBranch(repositoryPath, options.newName, options.newName, { force: !!options.force }, { exec });
+                return renameBranch(repositoryPath, options.newName, options.newName, { force: !!options.force }, { exec, env });
             }
             if (GitUtils.isBranchDelete(options)) {
-                return deleteBranch(repositoryPath, options.toDelete, { force: !!options.force, remote: !!options.remote }, { exec });
+                return deleteBranch(repositoryPath, options.toDelete, { force: !!options.force, remote: !!options.remote }, { exec, env });
             }
             return this.fail(repository, `Unexpected git branch options: ${options}.`);
         });
     }
 
     async checkout(repository: Repository, options: Git.Options.Checkout.CheckoutBranch | Git.Options.Checkout.WorkingTreeFile): Promise<void> {
-        const exec = await this.execProvider.exec();
+        await this.ready.promise;
+        const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
         return this.manager.run(repository, () => {
             const repositoryPath = this.getFsPath(repository);
             if (GitUtils.isBranchCheckout(options)) {
-                return checkoutBranch(repositoryPath, options.branch, { exec });
+                return checkoutBranch(repositoryPath, options.branch, { exec, env });
             }
             if (GitUtils.isWorkingTreeFileCheckout(options)) {
                 const paths = (Array.isArray(options.paths) ? options.paths : [options.paths]).map(FileUri.fsPath);
-                return checkoutPaths(repositoryPath, paths, { exec });
+                return checkoutPaths(repositoryPath, paths, { exec, env });
             }
             return this.fail(repository, `Unexpected git checkout options: ${options}.`);
         });
     }
 
     async commit(repository: Repository, message?: string, options?: Git.Options.Commit): Promise<void> {
+        await this.ready.promise;
         const signOff = options && options.signOff;
         const amend = options && options.amend;
-        const exec = await this.execProvider.exec();
+        const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
         return this.manager.run(repository, () =>
-            createCommit(this.getFsPath(repository), message || '', signOff, amend, { exec })
+            createCommit(this.getFsPath(repository), message || '', signOff, amend, { exec, env })
         );
     }
 
     async fetch(repository: Repository, options?: Git.Options.Fetch): Promise<void> {
+        await this.ready.promise;
         const repositoryPath = this.getFsPath(repository);
         const r = await this.getDefaultRemote(repositoryPath, options ? options.remote : undefined);
         if (r) {
-            const exec = await this.execProvider.exec();
+            const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
             return this.manager.run(repository, () =>
-                fetch(repositoryPath, r!, exec)
+                fetch(repositoryPath, r!, { exec, env })
             );
         }
         this.fail(repository, 'No remote repository specified. Please, specify either a URL or a remote name from which new revisions should be fetched.');
     }
 
     async push(repository: Repository, { remote, localBranch, remoteBranch, setUpstream, force }: Git.Options.Push = {}): Promise<void> {
+        await this.ready.promise;
         const repositoryPath = this.getFsPath(repository);
         const currentRemote = await this.getDefaultRemote(repositoryPath, remote);
         if (currentRemote === undefined) {
@@ -462,14 +486,15 @@ export class DugiteGit implements Git {
             args.push(branchName + (remoteBranch ? `:${remoteBranch}` : ''));
             await this.exec(repository, args);
         } else {
-            const exec = await this.execProvider.exec();
+            const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
             return this.manager.run(repository, () =>
-                push(repositoryPath, currentRemote!, branchName, remoteBranch, exec)
+                push(repositoryPath, currentRemote!, branchName, remoteBranch, { exec, env })
             );
         }
     }
 
     async pull(repository: Repository, { remote, branch, rebase }: Git.Options.Pull = {}): Promise<void> {
+        await this.ready.promise;
         const repositoryPath = this.getFsPath(repository);
         const currentRemote = await this.getDefaultRemote(repositoryPath, remote);
         if (currentRemote === undefined) {
@@ -488,50 +513,59 @@ export class DugiteGit implements Git {
             }
             await this.exec(repository, args);
         } else {
-            const exec = await this.execProvider.exec();
-            return this.manager.run(repository, () => pull(repositoryPath, currentRemote!, branch, exec));
+            const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
+            return this.manager.run(repository, () => pull(repositoryPath, currentRemote!, branch, { exec, env }));
         }
     }
 
     async reset(repository: Repository, options: Git.Options.Reset): Promise<void> {
+        await this.ready.promise;
         const repositoryPath = this.getFsPath(repository);
         const mode = this.getResetMode(options.mode);
-        const exec = await this.execProvider.exec();
+        const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
         return this.manager.run(repository, () =>
-            reset(repositoryPath, mode, options.mode ? options.mode : 'HEAD', { exec })
+            reset(repositoryPath, mode, options.ref ? options.ref : 'HEAD', { exec, env })
         );
     }
 
     async merge(repository: Repository, options: Git.Options.Merge): Promise<void> {
+        await this.ready.promise;
         const repositoryPath = this.getFsPath(repository);
-        const exec = await this.execProvider.exec();
+        const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
         return this.manager.run(repository, () =>
-            merge(repositoryPath, options.branch, { exec })
+            merge(repositoryPath, options.branch, { exec, env })
         );
     }
 
     async show(repository: Repository, uri: string, options?: Git.Options.Show): Promise<string> {
+        await this.ready.promise;
         const encoding = options ? options.encoding || 'utf8' : 'utf8';
         const commitish = this.getCommitish(options);
         const repositoryPath = this.getFsPath(repository);
         const path = this.getFsPath(uri);
-        const exec = await this.execProvider.exec();
+        const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
         if (encoding === 'binary') {
-            return (await getBlobContents(repositoryPath, commitish, path, { exec })).toString();
+            return (await getBlobContents(repositoryPath, commitish, path, { exec, env })).toString();
         }
-        return (await getTextContents(repositoryPath, commitish, path, { exec })).toString();
+        return (await getTextContents(repositoryPath, commitish, path, { exec, env })).toString();
     }
 
-    async remote(repository: Repository): Promise<string[]> {
+    async remote(repository: Repository): Promise<string[]>;
+    async remote(repository: Repository, options: { verbose: true }): Promise<Remote[]>;
+    async remote(repository: Repository, options?: Git.Options.Remote): Promise<string[] | Remote[]> {
+        await this.ready.promise;
         const repositoryPath = this.getFsPath(repository);
-        return this.getRemotes(repositoryPath);
+        const remotes = await this.getRemotes(repositoryPath);
+        const names = remotes.map(a => a.name);
+        return (options && options.verbose === true) ? remotes : names;
     }
 
     async exec(repository: Repository, args: string[], options?: Git.Options.Execution): Promise<GitResult> {
+        await this.ready.promise;
         const repositoryPath = this.getFsPath(repository);
         return this.manager.run(repository, async () => {
             const name = options && options.name ? options.name : '';
-            const exec = await this.execProvider.exec();
+            const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
             let opts = {};
             if (options) {
                 opts = {
@@ -540,13 +574,15 @@ export class DugiteGit implements Git {
             }
             opts = {
                 ...opts,
-                exec
+                exec,
+                env
             };
             return git(args, repositoryPath, name, opts);
         });
     }
 
     async diff(repository: Repository, options?: Git.Options.Diff): Promise<GitFileChange[]> {
+        await this.ready.promise;
         const args = ['diff', '--name-status', '-C', '-M', '-z'];
         args.push(this.mapRange((options || {}).range));
         if (options && options.uri) {
@@ -558,6 +594,7 @@ export class DugiteGit implements Git {
     }
 
     async log(repository: Repository, options?: Git.Options.Log): Promise<CommitWithChanges[]> {
+        await this.ready.promise;
         // If remaining commits should be calculated by the backend, then run `git rev-list --count ${fromRevision | HEAD~fromRevision}`.
         // How to use `mailmap` to map authors: https://www.kernel.org/pub/software/scm/git/docs/git-shortlog.html.
         const args = ['log'];
@@ -586,11 +623,12 @@ export class DugiteGit implements Git {
     }
 
     async blame(repository: Repository, uri: string, options?: Git.Options.Blame): Promise<GitFileBlame | undefined> {
+        await this.ready.promise;
         const args = ['blame', '--root', '--incremental'];
         const file = Path.relative(this.getFsPath(repository), this.getFsPath(uri));
         const repositoryPath = this.getFsPath(repository);
-        const exec = await this.execProvider.exec();
-        const status = await getStatus(repositoryPath, true, this.limit, { exec });
+        const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
+        const status = await getStatus(repositoryPath, true, this.limit, { exec, env });
         const isUncommitted = (change: DugiteFileChange) => change.status === AppFileStatus.New && change.path === file;
         const changes = status.workingDirectory.files;
         if (changes.some(isUncommitted)) {
@@ -620,6 +658,7 @@ export class DugiteGit implements Git {
 
     // tslint:disable-next-line:no-any
     async lsFiles(repository: Repository, uri: string, options?: Git.Options.LsFiles): Promise<any> {
+        await this.ready.promise;
         const args = ['ls-files'];
         const file = Path.relative(this.getFsPath(repository), this.getFsPath(uri));
         if (options && options.errorUnmatch) {
@@ -642,9 +681,10 @@ export class DugiteGit implements Git {
     // TODO: akitta what about symlinks? What if the workspace root is a symlink?
     // Maybe, we should use `--show-cdup` here instead of `--show-toplevel` because `show-toplevel` dereferences symlinks.
     private async resolveContainingPath(repositoryPath: string): Promise<string | undefined> {
+        await this.ready.promise;
         // Do not log an error if we are not contained in a Git repository. Treat exit code 128 as a success too.
-        const exec = await this.execProvider.exec();
-        const options = { successExitCodes: new Set([0, 128]), exec };
+        const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
+        const options = { successExitCodes: new Set([0, 128]), exec, env };
         const result = await git(['rev-parse', '--show-toplevel'], repositoryPath, 'rev-parse', options);
         const out = result.stdout;
         if (out && out.length !== 0) {
@@ -658,27 +698,39 @@ export class DugiteGit implements Git {
         return undefined;
     }
 
-    private async getRemotes(repositoryPath: string): Promise<string[]> {
-        const exec = await this.execProvider.exec();
-        const result = await git(['remote'], repositoryPath, 'remote', { exec });
+    private async getRemotes(repositoryPath: string): Promise<Remote[]> {
+        await this.ready.promise;
+        const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
+        const result = await git(['remote', '-v'], repositoryPath, 'remote', { exec, env });
         const out = result.stdout || '';
-        return out.trim().match(/\S+/g) || [];
+        const results = out.trim().match(/\S+/g);
+        if (results) {
+            const values: Remote[] = [];
+            for (let i = 0; i < results.length; i += 6) {
+                values.push({ name: results[i], fetch: results[i + 1], push: results[i + 4] });
+            }
+            return values;
+        } else {
+            return [];
+        }
     }
 
     private async getDefaultRemote(repositoryPath: string, remote?: string): Promise<string | undefined> {
         if (remote === undefined) {
             const remotes = await this.getRemotes(repositoryPath);
-            return remotes.shift();
+            const name = remotes.map(a => a.name);
+            return name.shift();
         }
         return remote;
     }
 
     private async getCurrentBranch(repositoryPath: string, localBranch?: string): Promise<Branch | string> {
+        await this.ready.promise;
         if (localBranch !== undefined) {
             return localBranch;
         }
-        const exec = await this.execProvider.exec();
-        const branch = await listBranch(repositoryPath, 'current', { exec });
+        const [exec, env] = await Promise.all([this.execProvider.exec(), this.gitEnv.promise]);
+        const branch = await listBranch(repositoryPath, 'current', { exec, env });
         if (branch === undefined) {
             return this.fail(repositoryPath, 'No current branch.');
         }
@@ -723,19 +775,15 @@ export class DugiteGit implements Git {
 
     private async mapCommitIdentity(toMap: DugiteCommitIdentity): Promise<CommitIdentity> {
         return {
-            timestamp: toMap.date.getTime(),
+            timestamp: toMap.date.toISOString(),
             email: toMap.email,
             name: toMap.name,
-            tzOffset: toMap.tzOffset
         };
     }
 
     private async mapStatus(toMap: IStatusResult, repository: Repository): Promise<WorkingDirectoryStatus> {
         const repositoryPath = this.getFsPath(repository);
-        const aheadBehindPromise = this.mapAheadBehind(toMap.branchAheadBehind);
-        const changesPromise = this.mapFileChanges(toMap.workingDirectory, repositoryPath);
-        const aheadBehind = await aheadBehindPromise;
-        const changes = await changesPromise;
+        const [aheadBehind, changes] = await Promise.all([this.mapAheadBehind(toMap.branchAheadBehind), this.mapFileChanges(toMap.workingDirectory, repositoryPath)]);
         return {
             exists: toMap.exists,
             branch: toMap.currentBranch,
@@ -756,12 +804,11 @@ export class DugiteGit implements Git {
     }
 
     private async mapFileChange(toMap: DugiteFileChange, repositoryPath: string): Promise<GitFileChange> {
-        const uriPromise = this.getUri(Path.join(repositoryPath, toMap.path));
-        const statusPromise = this.mapFileStatus(toMap.status);
-        const oldUriPromise = toMap.oldPath ? this.getUri(Path.join(repositoryPath, toMap.oldPath)) : undefined;
-        const uri = await uriPromise;
-        const status = await statusPromise;
-        const oldUri = await oldUriPromise;
+        const [uri, status, oldUri] = await Promise.all([
+            this.getUri(Path.join(repositoryPath, toMap.path)),
+            this.mapFileStatus(toMap.status),
+            toMap.oldPath ? this.getUri(Path.join(repositoryPath, toMap.oldPath)) : undefined
+        ]);
         return {
             uri,
             status,

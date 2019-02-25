@@ -37,7 +37,7 @@
   height: calc(var(--theia-private-horizontal-tab-height) + var(--theia-private-horizontal-tab-scrollbar-rail-height) / 2);
   min-width: 35px;
   line-height: var(--theia-private-horizontal-tab-height);
-  padding: 0px 8px;
+  padding: 0px 2px 0px 4px;
   background: var(--theia-layout-color3);
 }
 
@@ -73,20 +73,39 @@
   display: inline-block;
 }
 
+.p-TabBar-tab-secondary-label {
+  color: var(--theia-brand-color2);
+  cursor: pointer;
+  font-size: var(--theia-ui-font-size0);
+  margin-left: 5px;
+  text-decoration-line: underline;
+
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--theia-ui-font-color1) 50%), linear-gradient(135deg, var(--theia-ui-font-color1) 50%, transparent 50%);
+  background-position: calc(100% - 6px) 8px, calc(100% - 2px) 8px, 100% 0;
+  background-size: 4px 5px;
+  background-repeat: no-repeat;
+  padding: 2px 14px 0 0;
+}
+
 .p-TabBar .p-TabBar-tabIcon {
   width: 15px;
   line-height: 1.7;
 }
 
 .p-TabBar.theia-app-centers .p-TabBar-tab.p-mod-closable > .p-TabBar-tabCloseIcon {
-  margin-left: 4px;
   padding-top: 6px;
   height: 16px;
   width: 16px;
-  background-image: var(--theia-icon-close);
   background-size: 16px;
   background-position: center;
   background-repeat: no-repeat;
+}
+
+.p-TabBar.theia-app-centers .p-TabBar-tab.p-mod-closable:hover > .p-TabBar-tabCloseIcon,
+.p-TabBar.theia-app-centers .p-TabBar-tab.p-mod-current > .p-TabBar-tabCloseIcon {
+  background-image: var(--theia-icon-close);
 }
 
 .p-TabBar.theia-app-centers .p-TabBar-tab.p-mod-closable.theia-mod-dirty > .p-TabBar-tabCloseIcon {
@@ -102,23 +121,23 @@
 | Perfect scrollbar
 |----------------------------------------------------------------------------*/
 
-.p-TabBar[data-orientation='horizontal'] > .ps__rail-x {
+.p-TabBar[data-orientation='horizontal'] > .p-TabBar-content-container > .ps__rail-x {
   height: var(--theia-private-horizontal-tab-scrollbar-rail-height);
   z-index: 1000;
 }
 
-.p-TabBar[data-orientation='horizontal'] > .ps__rail-x  >.ps__thumb-x {
+.p-TabBar[data-orientation='horizontal'] > .p-TabBar-content-container > .ps__rail-x  > .ps__thumb-x {
   height: var(--theia-private-horizontal-tab-scrollbar-height);
   bottom: calc((var(--theia-private-horizontal-tab-scrollbar-rail-height) - var(--theia-private-horizontal-tab-scrollbar-height)) / 2);
 }
 
-.p-TabBar[data-orientation='horizontal'] > .ps__rail-x:hover,
-.p-TabBar[data-orientation='horizontal'] > .ps__rail-x:focus {
+.p-TabBar[data-orientation='horizontal'] > .p-TabBar-content-container > .ps__rail-x:hover,
+.p-TabBar[data-orientation='horizontal'] > .p-TabBar-content-container > .ps__rail-x:focus {
   height: var(--theia-private-horizontal-tab-scrollbar-rail-height);
 }
 
-.p-TabBar[data-orientation='horizontal'] > .ps__rail-x:hover > .ps__thumb-x,
-.p-TabBar[data-orientation='horizontal'] > .ps__rail-x:focus > .ps__thumb-x {
+.p-TabBar[data-orientation='horizontal'] > .p-TabBar-content-container > .ps__rail-x:hover > .ps__thumb-x,
+.p-TabBar[data-orientation='horizontal'] > .p-TabBar-content-container > .ps__rail-x:focus > .ps__thumb-x {
   height: var(--theia-private-horizontal-tab-scrollbar-height);
   bottom: calc((var(--theia-private-horizontal-tab-scrollbar-rail-height) - var(--theia-private-horizontal-tab-scrollbar-height)) / 2);
 }
@@ -152,4 +171,32 @@
 .p-TabBar-tab.p-mod-drag-image > .p-TabBar-tabIcon {
   width: 15px;
   line-height: 1.7;
+}
+
+/*-----------------------------------------------------------------------------
+| Tab-bar toolbar
+|----------------------------------------------------------------------------*/
+
+.p-TabBar-toolbar {
+  z-index: 1001; /* Due to the scrollbar (`z-index: 1000;`) it has a greater `z-index`. */
+  display: flex;
+  flex-direction: row-reverse;
+  padding: 4px;
+  padding-left: 0px;
+  margin-right: 4px;
+}
+
+.p-TabBar-content-container {
+  display: flex;
+  flex: 1;
+}
+
+.p-TabBar-toolbar .item {
+  display: flex;
+  align-items: center;
+  margin-left: 8px; /* `padding` + `margin-right` from the container toolbar */
+}
+
+.p-TabBar-toolbar .item:hover {
+  cursor: pointer;
 }

@@ -23,6 +23,8 @@ import { EditorManager } from './editor-manager';
 
 export namespace EditorCommands {
 
+    const EDITOR_CATEGORY = 'Editor';
+
     /**
      * Show editor references
      */
@@ -35,16 +37,26 @@ export namespace EditorCommands {
     export const CONFIG_INDENTATION: Command = {
         id: 'textEditor.commands.configIndentation'
     };
+
+    export const CONFIG_EOL: Command = {
+        id: 'textEditor.commands.configEol',
+        category: EDITOR_CATEGORY,
+        label: 'Change End of Line Sequence'
+    };
+
     export const INDENT_USING_SPACES: Command = {
         id: 'textEditor.commands.indentUsingSpaces',
+        category: EDITOR_CATEGORY,
         label: 'Indent Using Spaces'
     };
     export const INDENT_USING_TABS: Command = {
         id: 'textEditor.commands.indentUsingTabs',
+        category: EDITOR_CATEGORY,
         label: 'Indent Using Tabs'
     };
     export const CHANGE_LANGUAGE: Command = {
         id: 'textEditor.change.language',
+        category: EDITOR_CATEGORY,
         label: 'Change Language Mode'
     };
 
@@ -53,6 +65,7 @@ export namespace EditorCommands {
      */
     export const GO_BACK: Command = {
         id: 'textEditor.commands.go.back',
+        category: EDITOR_CATEGORY,
         label: 'Go Back'
     };
     /**
@@ -60,6 +73,7 @@ export namespace EditorCommands {
      */
     export const GO_FORWARD: Command = {
         id: 'textEditor.commands.go.forward',
+        category: EDITOR_CATEGORY,
         label: 'Go Forward'
     };
     /**
@@ -67,7 +81,16 @@ export namespace EditorCommands {
      */
     export const GO_LAST_EDIT: Command = {
         id: 'textEditor.commands.go.lastEdit',
+        category: EDITOR_CATEGORY,
         label: 'Go to Last Edit Location'
+    };
+    /**
+     * Command that clears the editor navigation history.
+     */
+    export const CLEAR_EDITOR_HISTORY: Command = {
+        id: 'textEditor.commands.clear.history',
+        category: EDITOR_CATEGORY,
+        label: 'Clear Editor History'
     };
 }
 
@@ -94,6 +117,7 @@ export class EditorCommandContribution implements CommandContribution {
     registerCommands(registry: CommandRegistry): void {
         registry.registerCommand(EditorCommands.SHOW_REFERENCES);
         registry.registerCommand(EditorCommands.CONFIG_INDENTATION);
+        registry.registerCommand(EditorCommands.CONFIG_EOL);
         registry.registerCommand(EditorCommands.INDENT_USING_SPACES);
         registry.registerCommand(EditorCommands.INDENT_USING_TABS);
         registry.registerCommand(EditorCommands.CHANGE_LANGUAGE, {
@@ -105,6 +129,7 @@ export class EditorCommandContribution implements CommandContribution {
         registry.registerCommand(EditorCommands.GO_BACK);
         registry.registerCommand(EditorCommands.GO_FORWARD);
         registry.registerCommand(EditorCommands.GO_LAST_EDIT);
+        registry.registerCommand(EditorCommands.CLEAR_EDITOR_HISTORY);
 
         registry.registerCommand(CommonCommands.AUTO_SAVE, {
             isToggled: () => this.isAutoSaveOn(),

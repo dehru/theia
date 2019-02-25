@@ -16,6 +16,7 @@
 
 import { TextDocumentContentChangeEvent } from 'vscode-languageserver-types';
 import { JsonRpcServer, ApplicationError } from '@theia/core/lib/common';
+import { injectable } from 'inversify';
 export const fileSystemPath = '/services/filesystem';
 
 export const FileSystem = Symbol('FileSystem');
@@ -128,6 +129,15 @@ export interface FileSystem extends JsonRpcServer<FileSystemClient> {
      */
     access(uri: string, mode?: number): Promise<boolean>
 
+    /**
+     * Returns the path of the given file URI, specific to the backend's operating system.
+     * If the URI is not a file URI, undefined is returned.
+     *
+     * USE WITH CAUTION: You should always prefer URIs to paths if possible, as they are
+     * portable and platform independent. Pathes should only be used in cases you directly
+     * interact with the OS, e.g. when running a command on the shell.
+     */
+    getFsPath(uri: string): Promise<string | undefined>
 }
 
 export namespace FileAccess {
@@ -189,6 +199,23 @@ export interface FileSystemClient {
     shouldOverwrite: FileShouldOverwrite;
 
     onDidMove(sourceUri: string, targetUri: string): void;
+
+}
+
+@injectable()
+export class DispatchingFileSystemClient implements FileSystemClient {
+
+    readonly clients = new Set<FileSystemClient>();
+
+    shouldOverwrite(originalStat: FileStat, currentStat: FileStat): Promise<boolean> {
+        return Promise.race([...this.clients].map(client =>
+            client.shouldOverwrite(originalStat, currentStat))
+        );
+    }
+
+    onDidMove(sourceUri: string, targetUri: string): void {
+        this.clients.forEach(client => client.onDidMove(sourceUri, targetUri));
+    }
 
 }
 

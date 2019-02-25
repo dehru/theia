@@ -192,6 +192,28 @@ export namespace Repository {
 }
 
 /**
+ * Representation of a Git remote.
+ */
+export interface Remote {
+
+    /**
+     * The name of the remote.
+     */
+    readonly name: string,
+
+    /**
+     * The remote fetch url.
+     */
+    readonly fetch: string,
+
+    /**
+     * The remote git url.
+     */
+    readonly push: string,
+
+}
+
+/**
  * The branch type. Either local or remote.
  * The order matters.
  */
@@ -327,14 +349,9 @@ export interface CommitIdentity {
     readonly email: string;
 
     /**
-     * The date of the commit.
+     * The date of the commit in ISO format.
      */
-    readonly timestamp: number;
-
-    /**
-     * The time-zone offset.
-     */
-    readonly tzOffset?: number;
+    readonly timestamp: string;
 
 }
 

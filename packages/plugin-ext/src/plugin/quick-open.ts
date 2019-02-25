@@ -54,8 +54,8 @@ export class QuickOpenExtImpl implements QuickOpenExt {
             canSelectMany: options && options.canPickMany,
             placeHolder: options && options.placeHolder,
             autoFocus: { autoFocusFirstEntry: true },
-            matchOnDescription: options && options.machOnDescription,
-            matchOnDetail: options && options.machOnDetail,
+            matchOnDescription: options && options.matchOnDescription,
+            matchOnDetail: options && options.matchOnDetail,
             ignoreFocusLost: options && options.ignoreFocusOut
         });
 
@@ -112,7 +112,13 @@ export class QuickOpenExtImpl implements QuickOpenExt {
     showInput(options?: InputBoxOptions, token: CancellationToken = CancellationToken.None): PromiseLike<string | undefined> {
         this.validateInputHandler = options && options.validateInput;
 
-        const promise = this.proxy.$input(options!, typeof this.validateInputHandler === 'function');
+        if (!options) {
+            options = {
+                placeHolder: ''
+            };
+        }
+
+        const promise = this.proxy.$input(options, typeof this.validateInputHandler === 'function');
         return hookCancellationToken(token, promise);
     }
 

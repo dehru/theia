@@ -18,42 +18,69 @@ import { injectable, inject, postConstruct } from 'inversify';
 import { AbstractViewContribution } from '@theia/core/lib/browser/shell/view-contribution';
 import {
     Navigatable, SelectableTreeNode, Widget, KeybindingRegistry, CommonCommands,
-    OpenerService, FrontendApplicationContribution, FrontendApplication
+    OpenerService, FrontendApplicationContribution, FrontendApplication, CompositeTreeNode
 } from '@theia/core/lib/browser';
 import { FileDownloadCommands } from '@theia/filesystem/lib/browser/download/file-download-command-contribution';
-import { CommandRegistry, MenuModelRegistry, MenuPath, isOSX } from '@theia/core/lib/common';
+import { CommandRegistry, MenuModelRegistry, MenuPath, isOSX, Command } from '@theia/core/lib/common';
 import { SHELL_TABBAR_CONTEXT_MENU } from '@theia/core/lib/browser';
 import { WorkspaceCommands, WorkspaceService, WorkspacePreferences } from '@theia/workspace/lib/browser';
 import { FILE_NAVIGATOR_ID, FileNavigatorWidget } from './navigator-widget';
 import { FileNavigatorPreferences } from './navigator-preferences';
 import { NavigatorKeybindingContexts } from './navigator-keybinding-context';
 import { FileNavigatorFilter } from './navigator-filter';
+import { WorkspaceNode } from './navigator-tree';
+import { NavigatorContextKeyService } from './navigator-context-key-service';
 
 export namespace FileNavigatorCommands {
-    export const REVEAL_IN_NAVIGATOR = {
+    export const REVEAL_IN_NAVIGATOR: Command = {
         id: 'navigator.reveal',
         label: 'Reveal in Files'
     };
-    export const TOGGLE_HIDDEN_FILES = {
+    export const TOGGLE_HIDDEN_FILES: Command = {
         id: 'navigator.toggle.hidden.files',
         label: 'Toggle Hidden Files'
+    };
+    export const COLLAPSE_ALL: Command = {
+        id: 'navigator.collapse.all'
     };
 }
 
 export const NAVIGATOR_CONTEXT_MENU: MenuPath = ['navigator-context-menu'];
 
+/**
+ * Navigator context menu default groups should be aligned
+ * with VS Code default groups: https://code.visualstudio.com/api/references/contribution-points#contributes.menus
+ */
 export namespace NavigatorContextMenu {
-    export const OPEN = [...NAVIGATOR_CONTEXT_MENU, '1_open'];
-    export const OPEN_WITH = [...OPEN, 'open_with'];
-    export const CLIPBOARD = [...NAVIGATOR_CONTEXT_MENU, '2_clipboard'];
-    export const MOVE = [...NAVIGATOR_CONTEXT_MENU, '3_move'];
-    export const NEW = [...NAVIGATOR_CONTEXT_MENU, '4_new'];
-    export const DIFF = [...NAVIGATOR_CONTEXT_MENU, '5_diff'];
-    export const WORKSPACE = [...NAVIGATOR_CONTEXT_MENU, '6_workspace'];
+    export const NAVIGATION = [...NAVIGATOR_CONTEXT_MENU, 'navigation'];
+    /** @deprecated use NAVIGATION */
+    export const OPEN = NAVIGATION;
+    /** @deprecated use NAVIGATION */
+    export const NEW = NAVIGATION;
+
+    export const WORKSPACE = [...NAVIGATOR_CONTEXT_MENU, '2_workspace'];
+
+    export const COMPARE = [...NAVIGATOR_CONTEXT_MENU, '3_compare'];
+    /** @deprecated use COMPARE */
+    export const DIFF = COMPARE;
+
+    export const SEARCH = [...NAVIGATOR_CONTEXT_MENU, '4_search'];
+    export const CLIPBOARD = [...NAVIGATOR_CONTEXT_MENU, '5_cutcopypaste'];
+
+    export const MODIFICATION = [...NAVIGATOR_CONTEXT_MENU, '7_modification'];
+    /** @deprecated use MODIFICATION */
+    export const MOVE = MODIFICATION;
+    /** @deprecated use MODIFICATION */
+    export const ACTIONS = MODIFICATION;
+
+    export const OPEN_WITH = [...NAVIGATION, 'open_with'];
 }
 
 @injectable()
 export class FileNavigatorContribution extends AbstractViewContribution<FileNavigatorWidget> implements FrontendApplicationContribution {
+
+    @inject(NavigatorContextKeyService)
+    protected readonly contextKeyService: NavigatorContextKeyService;
 
     constructor(
         @inject(FileNavigatorPreferences) protected readonly fileNavigatorPreferences: FileNavigatorPreferences,
@@ -78,6 +105,15 @@ export class FileNavigatorContribution extends AbstractViewContribution<FileNavi
     protected async init() {
         await this.fileNavigatorPreferences.ready;
         this.shell.currentChanged.connect(() => this.onCurrentWidgetChangedHandler());
+
+        const updateFocusContextKeys = () => {
+            const hasFocus = this.shell.activeWidget instanceof FileNavigatorWidget;
+            this.contextKeyService.explorerViewletFocus.set(hasFocus);
+            this.contextKeyService.filesExplorerFocus.set(hasFocus);
+        };
+        updateFocusContextKeys();
+        this.shell.activeChanged.connect(updateFocusContextKeys);
+
     }
 
     async initializeLayout(app: FrontendApplication): Promise<void> {
@@ -98,6 +134,11 @@ export class FileNavigatorContribution extends AbstractViewContribution<FileNavi
             isEnabled: () => true,
             isVisible: () => true
         });
+        registry.registerCommand(FileNavigatorCommands.COLLAPSE_ALL, {
+            execute: () => this.collapseFileNavigatorTree(),
+            isEnabled: () => this.workspaceService.opened,
+            isVisible: () => this.workspaceService.opened
+        });
     }
 
     registerMenus(registry: MenuModelRegistry): void {
@@ -108,7 +149,7 @@ export class FileNavigatorContribution extends AbstractViewContribution<FileNavi
             order: '5'
         });
 
-        registry.registerMenuAction(NavigatorContextMenu.OPEN, {
+        registry.registerMenuAction(NavigatorContextMenu.NAVIGATION, {
             commandId: CommonCommands.OPEN.id
         });
         registry.registerSubmenu(NavigatorContextMenu.OPEN_WITH, 'Open With');
@@ -116,7 +157,9 @@ export class FileNavigatorContribution extends AbstractViewContribution<FileNavi
             for (const opener of openers) {
                 const openWithCommand = WorkspaceCommands.FILE_OPEN_WITH(opener);
                 registry.registerMenuAction(NavigatorContextMenu.OPEN_WITH, {
-                    commandId: openWithCommand.id
+                    commandId: openWithCommand.id,
+                    label: opener.label,
+                    icon: opener.iconClass
                 });
             }
         });
@@ -132,40 +175,49 @@ export class FileNavigatorContribution extends AbstractViewContribution<FileNavi
             commandId: CommonCommands.PASTE.id
         });
 
-        registry.registerMenuAction(NavigatorContextMenu.MOVE, {
+        registry.registerMenuAction(NavigatorContextMenu.MODIFICATION, {
             commandId: WorkspaceCommands.FILE_RENAME.id
         });
-        registry.registerMenuAction(NavigatorContextMenu.MOVE, {
+        registry.registerMenuAction(NavigatorContextMenu.MODIFICATION, {
             commandId: WorkspaceCommands.FILE_DELETE.id
         });
-        registry.registerMenuAction(NavigatorContextMenu.MOVE, {
+        registry.registerMenuAction(NavigatorContextMenu.MODIFICATION, {
             commandId: WorkspaceCommands.FILE_DUPLICATE.id
         });
-        registry.registerMenuAction(NavigatorContextMenu.MOVE, {
+        registry.registerMenuAction(NavigatorContextMenu.MODIFICATION, {
             commandId: FileDownloadCommands.DOWNLOAD.id,
             label: 'Download',
-            order: 'z' // Should be the last item in the "move" menu group.
+            order: 'z1' // Should be the last item in the "move" menu group.
         });
 
-        registry.registerMenuAction(NavigatorContextMenu.NEW, {
+        registry.registerMenuAction(NavigatorContextMenu.NAVIGATION, {
             commandId: WorkspaceCommands.NEW_FILE.id
         });
-        registry.registerMenuAction(NavigatorContextMenu.NEW, {
+        registry.registerMenuAction(NavigatorContextMenu.NAVIGATION, {
             commandId: WorkspaceCommands.NEW_FOLDER.id
         });
-        registry.registerMenuAction(NavigatorContextMenu.DIFF, {
+        registry.registerMenuAction(NavigatorContextMenu.COMPARE, {
             commandId: WorkspaceCommands.FILE_COMPARE.id
+        });
+        registry.registerMenuAction(NavigatorContextMenu.MODIFICATION, {
+            commandId: FileNavigatorCommands.COLLAPSE_ALL.id,
+            label: 'Collapse All',
+            order: 'z2'
         });
 
         this.workspacePreferences.ready.then(() => {
             if (this.workspacePreferences['workspace.supportMultiRootWorkspace']) {
-                registry.registerMenuAction(NavigatorContextMenu.WORKSPACE, {
-                    commandId: WorkspaceCommands.ADD_FOLDER.id
-                });
-                registry.registerMenuAction(NavigatorContextMenu.WORKSPACE, {
-                    commandId: WorkspaceCommands.REMOVE_FOLDER.id
-                });
+                this.registerAddRemoveFolderActions(registry);
             }
+            this.workspacePreferences.onPreferenceChanged(change => {
+                if (change.preferenceName === 'workspace.supportMultiRootWorkspace') {
+                    if (change.newValue) {
+                        this.registerAddRemoveFolderActions(registry);
+                    } else {
+                        this.unregisterAddRemoveFolderActions(registry);
+                    }
+                }
+            });
         });
     }
 
@@ -225,5 +277,42 @@ export class FileNavigatorContribution extends AbstractViewContribution<FileNavi
         if (this.fileNavigatorPreferences['navigator.autoReveal']) {
             this.selectWidgetFileNode(this.shell.currentWidget);
         }
+    }
+
+    /**
+     * Collapse file navigator nodes and set focus on first visible node
+     * - single root workspace: collapse all nodes except root
+     * - multiple root workspace: collapse all nodes, even roots
+     */
+    async collapseFileNavigatorTree(): Promise<void> {
+        const { model } = await this.widget;
+
+        // collapse all child nodes which are not the root (single root workspace)
+        // collapse all root nodes (multiple root workspace)
+        let root = model.root as CompositeTreeNode;
+        if (WorkspaceNode.is(root) && root.children.length === 1) {
+            root = root.children[0];
+        }
+        root.children.forEach(child => CompositeTreeNode.is(child) && model.collapseAll(child));
+
+        // select first visible node
+        const firstChild = WorkspaceNode.is(root) ? root.children[0] : root;
+        if (SelectableTreeNode.is(firstChild)) {
+            await model.selectNode(firstChild);
+        }
+    }
+
+    private registerAddRemoveFolderActions(registry: MenuModelRegistry): void {
+        registry.registerMenuAction(NavigatorContextMenu.WORKSPACE, {
+            commandId: WorkspaceCommands.ADD_FOLDER.id
+        });
+        registry.registerMenuAction(NavigatorContextMenu.WORKSPACE, {
+            commandId: WorkspaceCommands.REMOVE_FOLDER.id
+        });
+    }
+
+    private unregisterAddRemoveFolderActions(registry: MenuModelRegistry): void {
+        registry.unregisterMenuAction({ commandId: WorkspaceCommands.ADD_FOLDER.id }, NavigatorContextMenu.WORKSPACE);
+        registry.unregisterMenuAction({ commandId: WorkspaceCommands.REMOVE_FOLDER.id }, NavigatorContextMenu.WORKSPACE);
     }
 }

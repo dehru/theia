@@ -30,11 +30,20 @@ import {
     AutoClosingPairConditional,
     AutoClosingPair,
     ViewContainer,
+    Keybinding,
+    PluginPackageKeybinding,
     PluginPackageViewContainer,
     View,
     PluginPackageView,
     Menu,
-    PluginPackageMenu
+    PluginPackageMenu,
+    PluginPackageDebuggersContribution,
+    DebuggerContribution,
+    SnippetContribution,
+    PluginPackageCommand,
+    PluginCommand,
+    IconUrl,
+    getPluginId
 } from '../../../common/plugin-protocol';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -42,6 +51,21 @@ import { isObject } from 'util';
 import { GrammarsReader } from './grammars-reader';
 import { CharacterPair } from '../../../api/plugin-api';
 import * as jsoncparser from 'jsonc-parser';
+import { IJSONSchema } from '@theia/core/lib/common/json-schema';
+import { deepClone } from '@theia/core/lib/common/objects';
+import { FileUri } from '@theia/core/lib/node/file-uri';
+
+namespace nls {
+    export function localize(key: string, _default: string) {
+        return _default;
+    }
+}
+
+const INTERNAL_CONSOLE_OPTIONS_SCHEMA = {
+    enum: ['neverOpen', 'openOnSessionStart', 'openOnFirstSessionStart'],
+    default: 'openOnFirstSessionStart',
+    description: nls.localize('internalConsoleOptions', 'Controls when the internal debug console should open.')
+};
 
 @injectable()
 export class TheiaPluginScanner implements PluginScanner {
@@ -95,6 +119,7 @@ export class TheiaPluginScanner implements PluginScanner {
             const config = this.readConfiguration(rawPlugin.contributes.configuration!, rawPlugin.packagePath);
             contributions.configuration = config;
         }
+        contributions.configurationDefaults = rawPlugin.contributes.configurationDefaults;
 
         if (rawPlugin.contributes!.languages) {
             const languages = this.readLanguages(rawPlugin.contributes.languages!, rawPlugin.packagePath);
@@ -132,6 +157,12 @@ export class TheiaPluginScanner implements PluginScanner {
             });
         }
 
+        const pluginCommands = rawPlugin.contributes.commands;
+        if (pluginCommands) {
+            const commands = Array.isArray(pluginCommands) ? pluginCommands : [pluginCommands];
+            contributions.commands = commands.map(command => this.readCommand(command, rawPlugin));
+        }
+
         if (rawPlugin.contributes!.menus) {
             contributions.menus = {};
 
@@ -141,14 +172,85 @@ export class TheiaPluginScanner implements PluginScanner {
             });
         }
 
+        if (rawPlugin.contributes && rawPlugin.contributes.keybindings) {
+            contributions.keybindings = rawPlugin.contributes.keybindings.map(rawKeybinding => this.readKeybinding(rawKeybinding));
+        }
+
+        if (rawPlugin.contributes!.debuggers) {
+            const debuggers = this.readDebuggers(rawPlugin.contributes.debuggers!);
+            contributions.debuggers = debuggers;
+        }
+
+        contributions.snippets = this.readSnippets(rawPlugin);
         return contributions;
     }
 
+    protected readCommand({ command, title, category, icon }: PluginPackageCommand, pck: PluginPackage): PluginCommand {
+        let iconUrl: IconUrl | undefined;
+        if (icon) {
+            if (typeof icon === 'string') {
+                iconUrl = this.toPluginUrl(pck, icon);
+            } else {
+                iconUrl = {
+                    light: this.toPluginUrl(pck, icon.light),
+                    dark: this.toPluginUrl(pck, icon.dark)
+                };
+            }
+        }
+        return { command, title, category, iconUrl };
+    }
+
+    protected toPluginUrl(pck: PluginPackage, relativePath: string): string {
+        return path.join('hostedPlugin', getPluginId(pck), relativePath);
+    }
+
+    protected readSnippets(pck: PluginPackage): SnippetContribution[] | undefined {
+        if (!pck.contributes || !pck.contributes.snippets) {
+            return undefined;
+        }
+        const result: SnippetContribution[] = [];
+        for (const contribution of pck.contributes.snippets) {
+            if (contribution.path) {
+                result.push({
+                    language: contribution.language,
+                    source: pck.displayName || pck.name,
+                    uri: FileUri.create(path.join(pck.packagePath, contribution.path)).toString()
+                });
+            }
+        }
+        return result;
+    }
+
+    protected readJson<T>(filePath: string): T | undefined {
+        const content = this.readFileSync(filePath);
+        return content ? jsoncparser.parse(content, undefined, { disallowComments: false }) : undefined;
+    }
+    protected readFileSync(filePath: string): string {
+        try {
+            return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+        } catch (e) {
+            console.error(e);
+            return '';
+        }
+    }
+
+    // tslint:disable-next-line:no-any
     private readConfiguration(rawConfiguration: any, pluginPath: string): any {
         return {
             type: rawConfiguration.type,
             title: rawConfiguration.title,
             properties: rawConfiguration.properties
+        };
+    }
+
+    private readKeybinding(rawKeybinding: PluginPackageKeybinding): Keybinding {
+        return {
+            keybinding: rawKeybinding.key,
+            command: rawKeybinding.command,
+            when: rawKeybinding.when,
+            mac: rawKeybinding.mac,
+            linux: rawKeybinding.linux,
+            win: rawKeybinding.win
         };
     }
 
@@ -186,7 +288,8 @@ export class TheiaPluginScanner implements PluginScanner {
     private readMenu(rawMenu: PluginPackageMenu): Menu {
         const result: Menu = {
             command: rawMenu.command,
-            group: rawMenu.group
+            group: rawMenu.group,
+            when: rawMenu.when
         };
         return result;
     }
@@ -207,11 +310,8 @@ export class TheiaPluginScanner implements PluginScanner {
             mimetypes: rawLang.mimetypes
         };
         if (rawLang.configuration) {
-            const conf = fs.readFileSync(path.resolve(pluginPath, rawLang.configuration), 'utf8');
-            if (conf) {
-                const strippedContent = jsoncparser.stripComments(conf);
-                const rawConfiguration: PluginPackageLanguageContributionConfiguration = jsoncparser.parse(strippedContent);
-
+            const rawConfiguration = this.readJson<PluginPackageLanguageContributionConfiguration>(path.resolve(pluginPath, rawLang.configuration));
+            if (rawConfiguration) {
                 const configuration: LanguageConfiguration = {
                     brackets: rawConfiguration.brackets,
                     comments: rawConfiguration.comments,
@@ -226,6 +326,115 @@ export class TheiaPluginScanner implements PluginScanner {
         }
         return result;
 
+    }
+
+    private readDebuggers(rawDebuggers: PluginPackageDebuggersContribution[]): DebuggerContribution[] {
+        return rawDebuggers.map(rawDebug => this.readDebugger(rawDebug));
+    }
+
+    private readDebugger(rawDebugger: PluginPackageDebuggersContribution): DebuggerContribution {
+        const result: DebuggerContribution = {
+            type: rawDebugger.type,
+            label: rawDebugger.label,
+            languages: rawDebugger.languages,
+            enableBreakpointsFor: rawDebugger.enableBreakpointsFor,
+            variables: rawDebugger.variables,
+            adapterExecutableCommand: rawDebugger.adapterExecutableCommand,
+            configurationSnippets: rawDebugger.configurationSnippets,
+            win: rawDebugger.win,
+            winx86: rawDebugger.winx86,
+            windows: rawDebugger.windows,
+            osx: rawDebugger.osx,
+            linux: rawDebugger.linux,
+            program: rawDebugger.program,
+            args: rawDebugger.args,
+            runtime: rawDebugger.runtime,
+            runtimeArgs: rawDebugger.runtimeArgs
+        };
+
+        result.configurationAttributes = rawDebugger.configurationAttributes
+            && this.resolveSchemaAttributes(rawDebugger.type, rawDebugger.configurationAttributes);
+
+        return result;
+    }
+
+    protected resolveSchemaAttributes(type: string, configurationAttributes: { [request: string]: IJSONSchema }): IJSONSchema[] {
+        const taskSchema = {};
+        return Object.keys(configurationAttributes).map(request => {
+            const attributes: IJSONSchema = deepClone(configurationAttributes[request]);
+            const defaultRequired = ['name', 'type', 'request'];
+            attributes.required = attributes.required && attributes.required.length ? defaultRequired.concat(attributes.required) : defaultRequired;
+            attributes.additionalProperties = false;
+            attributes.type = 'object';
+            if (!attributes.properties) {
+                attributes.properties = {};
+            }
+            const properties = attributes.properties;
+            properties['type'] = {
+                enum: [type],
+                description: nls.localize('debugType', 'Type of configuration.'),
+                pattern: '^(?!node2)',
+                errorMessage: nls.localize('debugTypeNotRecognised',
+                    'The debug type is not recognized. Make sure that you have a corresponding debug extension installed and that it is enabled.'),
+                patternErrorMessage: nls.localize('node2NotSupported',
+                    '"node2" is no longer supported, use "node" instead and set the "protocol" attribute to "inspector".')
+            };
+            properties['name'] = {
+                type: 'string',
+                description: nls.localize('debugName', 'Name of configuration; appears in the launch configuration drop down menu.'),
+                default: 'Launch'
+            };
+            properties['request'] = {
+                enum: [request],
+                description: nls.localize('debugRequest', 'Request type of configuration. Can be "launch" or "attach".'),
+            };
+            properties['debugServer'] = {
+                type: 'number',
+                description: nls.localize('debugServer',
+                    'For debug extension development only: if a port is specified VS Code tries to connect to a debug adapter running in server mode'),
+                default: 4711
+            };
+            properties['preLaunchTask'] = {
+                anyOf: [taskSchema, {
+                    type: ['string', 'null'],
+                }],
+                default: '',
+                description: nls.localize('debugPrelaunchTask', 'Task to run before debug session starts.')
+            };
+            properties['postDebugTask'] = {
+                anyOf: [taskSchema, {
+                    type: ['string', 'null'],
+                }],
+                default: '',
+                description: nls.localize('debugPostDebugTask', 'Task to run after debug session ends.')
+            };
+            properties['internalConsoleOptions'] = INTERNAL_CONSOLE_OPTIONS_SCHEMA;
+
+            const osProperties = Object.assign({}, properties);
+            properties['windows'] = {
+                type: 'object',
+                description: nls.localize('debugWindowsConfiguration', 'Windows specific launch configuration attributes.'),
+                properties: osProperties
+            };
+            properties['osx'] = {
+                type: 'object',
+                description: nls.localize('debugOSXConfiguration', 'OS X specific launch configuration attributes.'),
+                properties: osProperties
+            };
+            properties['linux'] = {
+                type: 'object',
+                description: nls.localize('debugLinuxConfiguration', 'Linux specific launch configuration attributes.'),
+                properties: osProperties
+            };
+            Object.keys(attributes.properties).forEach(name => {
+                // Use schema allOf property to get independent error reporting #21113
+                attributes!.properties![name].pattern = attributes!.properties![name].pattern || '^(?!.*\\$\\{(env|config|command)\\.)';
+                attributes!.properties![name].patternErrorMessage = attributes!.properties![name].patternErrorMessage ||
+                    nls.localize('deprecatedVariables', "'env.', 'config.' and 'command.' are deprecated, use 'env:', 'config:' and 'command:' instead.");
+            });
+
+            return attributes;
+        });
     }
 
     private extractValidAutoClosingPairs(langId: string, configuration: PluginPackageLanguageContributionConfiguration): AutoClosingPairConditional[] | undefined {

@@ -14,8 +14,14 @@
  * SPDX-License-Identifier: EPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0
  ********************************************************************************/
 
+// tslint:disable:no-any
+
 import * as theia from '@theia/plugin';
 import { BackendInitializationFn, PluginAPIFactory, Plugin, emptyPlugin } from '@theia/plugin-ext';
+
+/** Set up en as a default locale for VS Code extensions using vscode-nls */
+process.env['VSCODE_NLS_CONFIG'] = JSON.stringify({ locale: 'en', availableLanguages: {} });
+process.env['VSCODE_PID'] = process.env['THEIA_PARENT_PID'];
 
 const pluginsApiImpl = new Map<string, typeof theia>();
 const plugins = new Array<Plugin>();
@@ -26,35 +32,42 @@ let pluginApiFactory: PluginAPIFactory;
 export const doInitialization: BackendInitializationFn = (apiFactory: PluginAPIFactory, plugin: Plugin) => {
     const vscode = apiFactory(plugin);
 
-    // register the commands that are in the package.json file
-    const contributes: any = plugin.rawModel.contributes;
-    if (contributes && contributes.commands) {
-        contributes.commands.forEach((commandItem: any) => {
-            let commandLabel: string;
-            if (commandItem.category) { // if VS Code command has category we will add it before title, so label will looks like 'category: title'
-                commandLabel = commandItem.category + ': ' + commandItem.title;
-            } else {
-                commandLabel = commandItem.title;
-            }
-            vscode.commands.registerCommand({id: commandItem.command, label: commandLabel });
-        });
-    }
-
     // replace command API as it will send only the ID as a string parameter
-    vscode.commands.registerCommand = function registerCommand(command: any, handler?: <T>(...args: any[]) => T | Thenable<T>): any {
+    const registerCommand = vscode.commands.registerCommand;
+    vscode.commands.registerCommand = function (command: any, handler?: <T>(...args: any[]) => T | Thenable<T>): any {
         // use of the ID when registering commands
         if (typeof command === 'string' && handler) {
             return vscode.commands.registerHandler(command, handler);
         }
+        return registerCommand(command, handler);
+    };
+
+    // replace createWebviewPanel API for override html setter
+    const createWebviewPanel = vscode.window.createWebviewPanel;
+    vscode.window.createWebviewPanel = function (viewType: string, title: string, showOptions: any, options: any | undefined): any {
+        const panel = createWebviewPanel(viewType, title, showOptions, options);
+        // redefine property
+        Object.defineProperty(panel.webview, 'html', {
+            set: function (html: string) {
+                const newHtml = html.replace(new RegExp('vscode-resource:/', 'g'), '/webview/');
+                this.checkIsDisposed();
+                if (this._html !== newHtml) {
+                    this._html = newHtml;
+                    this.proxy.$setHtml(this.viewId, newHtml);
+                }
+            }
+        });
+
+        return panel;
     };
 
     // use Theia plugin api instead vscode extensions
     (<any>vscode).extensions = {
         get all(): any[] {
-            return vscode.plugins.all;
+            return vscode.plugins.all.map(p => withExtensionPath(p));
         },
         getExtension(pluginId: string): any | undefined {
-            return vscode.plugins.getPlugin(pluginId);
+            return withExtensionPath(vscode.plugins.getPlugin(pluginId));
         }
     };
 
@@ -101,4 +114,12 @@ function overrideInternalLoad(): void {
 
 function findPlugin(filePath: string): Plugin | undefined {
     return plugins.find(plugin => filePath.startsWith(plugin.pluginFolder));
+}
+
+function withExtensionPath(plugin: any | undefined): any | undefined {
+    if (plugin && plugin.pluginPath) {
+        plugin.extensionPath = plugin.pluginPath;
+    }
+
+    return plugin;
 }

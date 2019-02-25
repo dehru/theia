@@ -23,9 +23,15 @@ import { EditorModelService } from './text-editor-model-service';
 import { createUntitledResource } from './editor/untitled-resource';
 import { EditorManager } from '@theia/editor/lib/browser';
 import URI from '@theia/core/lib/common/uri';
-import { Saveable } from '@theia/core/lib/browser';
+import CodeURI from 'vscode-uri';
+import { ApplicationShell, OpenerOptions, Saveable } from '@theia/core/lib/browser';
+import { TextDocumentShowOptions } from '../../api/model';
+import { Range } from 'vscode-languageserver-types';
+import { OpenerService } from '@theia/core/lib/browser/opener-service';
+import { ViewColumn } from '../../plugin/types-impl';
 
 export class DocumentsMainImpl implements DocumentsMain {
+
     private proxy: DocumentsExt;
     private toDispose = new DisposableCollection();
     private modelToDispose = new Map<string, Disposable>();
@@ -35,7 +41,8 @@ export class DocumentsMainImpl implements DocumentsMain {
         editorsAndDocuments: EditorsAndDocumentsMain,
         modelService: EditorModelService,
         rpc: RPCProtocol,
-        private editorManger: EditorManager
+        private editorManger: EditorManager,
+        private openerService: OpenerService,
     ) {
         this.proxy = rpc.getProxy(MAIN_RPC_CONTEXT.DOCUMENTS_EXT);
 
@@ -45,6 +52,18 @@ export class DocumentsMainImpl implements DocumentsMain {
 
         this.toDispose.push(modelService.onModelSaved(m => {
             this.proxy.$acceptModelSaved(m.textEditorModel.uri);
+        }));
+        this.toDispose.push(modelService.onModelWillSave(onWillSaveModelEvent => {
+            onWillSaveModelEvent.waitUntil(new Promise<monaco.editor.IIdentifiedSingleEditOperation[]>(async resolve => {
+                const edits = await this.proxy.$acceptModelWillSave(onWillSaveModelEvent.model.textEditorModel.uri, onWillSaveModelEvent.reason);
+                const transformedEdits = edits.map((edit): monaco.editor.IIdentifiedSingleEditOperation =>
+                ({
+                    range: monaco.Range.lift(edit.range),
+                    text: edit.text!,
+                    forceMoveMarkers: edit.forceMoveMarkers
+                }));
+                resolve(transformedEdits);
+            }));
         }));
         this.toDispose.push(modelService.onModelDirtyChanged(m => {
             this.proxy.$acceptDirtyStateChanged(m.textEditorModel.uri, m.dirty);
@@ -96,26 +115,74 @@ export class DocumentsMainImpl implements DocumentsMain {
         this.modelToDispose.delete(modelUrl);
     }
 
-    $tryCreateDocument(options?: { language?: string; content?: string; }): Promise<UriComponents> {
-        let language;
-        let content;
-        if (options) {
-            language = options.language;
-            content = options.content;
-        }
-        return Promise.resolve(createUntitledResource(content, language));
+    async $tryCreateDocument(options?: { language?: string; content?: string; }): Promise<UriComponents> {
+        const language = options && options.language;
+        const content = options && options.content;
+        return createUntitledResource(content, language);
     }
 
-    $tryOpenDocument(uri: UriComponents): Promise<void> {
-        return this.editorManger.open(new URI(uri.external!)).then(() => void 0);
-    }
-
-    $trySaveDocument(uri: UriComponents): Promise<boolean> {
-        return this.editorManger.getByUri(new URI(uri.external!)).then(e => {
-            if (e) {
-                return Saveable.save(e).then(() => true);
+    async $tryOpenDocument(uri: UriComponents, options?: TextDocumentShowOptions): Promise<void> {
+        // Removing try-catch block here makes it not possible to handle errors.
+        // Following message is appeared in browser console
+        //   - Uncaught (in promise) Error: Cannot read property 'message' of undefined.
+        try {
+            let openerOptions: OpenerOptions | undefined;
+            if (options) {
+                let range: Range | undefined;
+                if (options.selection) {
+                    const selection = options.selection;
+                    range = {
+                        start: { line: selection.startLineNumber - 1, character: selection.startColumn - 1 },
+                        end: { line: selection.endLineNumber - 1, character: selection.endColumn - 1 }
+                    };
+                }
+                let widgetOptions: ApplicationShell.WidgetOptions | undefined;
+                if (options.viewColumn) {
+                    const viewColumn = options.viewColumn;
+                    const visibleEditors = this.editorManger.all;
+                    let editorIndex = -1;
+                    if (viewColumn > 0) {
+                        editorIndex = viewColumn - 1;
+                    } else {
+                        const activeEditor = this.editorManger.activeEditor;
+                        if (activeEditor) {
+                            const activeEditorIndex = visibleEditors.indexOf(activeEditor);
+                            if (viewColumn === ViewColumn.Active) {
+                                editorIndex = activeEditorIndex;
+                            } else if (viewColumn === ViewColumn.Beside) {
+                                editorIndex = activeEditorIndex + 1;
+                            }
+                        }
+                    }
+                    if (editorIndex > -1 && visibleEditors.length > editorIndex) {
+                        widgetOptions = { ref: visibleEditors[editorIndex] };
+                    } else {
+                        widgetOptions = { mode: 'split-right' };
+                    }
+                }
+                openerOptions = {
+                    selection: range,
+                    mode: options.preserveFocus ? 'open' : 'activate',
+                    preview: options.preview,
+                    widgetOptions
+                };
             }
-            return Promise.resolve(false);
-        });
+            const uriArg = new URI(CodeURI.revive(uri));
+            const opener = await this.openerService.getOpener(uriArg, openerOptions);
+            await opener.open(uriArg, openerOptions);
+        } catch (err) {
+            throw new Error(err);
+        }
     }
+
+    async $trySaveDocument(uri: UriComponents): Promise<boolean> {
+        const widget = await this.editorManger.getByUri(new URI(CodeURI.revive(uri)));
+        if (widget) {
+            await Saveable.save(widget);
+            return true;
+        }
+
+        return false;
+    }
+
 }

@@ -23,6 +23,7 @@ import { ApplicationShell } from './shell/application-shell';
 import { ShellLayoutRestorer } from './shell/shell-layout-restorer';
 import { FrontendApplicationStateService } from './frontend-application-state';
 import { preventNavigation, parseCssTime } from './browser';
+import { CorePreferences } from './core-preferences';
 
 /**
  * Clients can implement to get a callback for contributing widgets to a shell on start.
@@ -31,15 +32,28 @@ export const FrontendApplicationContribution = Symbol('FrontendApplicationContri
 export interface FrontendApplicationContribution {
 
     /**
-     * Called on application startup before onStart is called.
+     * Called on application startup before configure is called.
      */
     initialize?(): void;
+
+    /**
+     * Called before commands, key bindings and menus are initialized.
+     * Should return a promise if it runs asynchronously.
+     */
+    configure?(app: FrontendApplication): MaybePromise<void>;
 
     /**
      * Called when the application is started. The application shell is not attached yet when this method runs.
      * Should return a promise if it runs asynchronously.
      */
     onStart?(app: FrontendApplication): MaybePromise<void>;
+
+    /**
+     * Called on `beforeunload` event, right before the window closes.
+     * Return `true` in order to prevent exit.
+     * Note: No async code allowed, this function has to run on one tick.
+     */
+    onWillStop?(app: FrontendApplication): boolean | void;
 
     /**
      * Called when an application is stopped or unloaded.
@@ -71,6 +85,9 @@ export abstract class DefaultFrontendApplicationContribution implements Frontend
 
 @injectable()
 export class FrontendApplication {
+
+    @inject(CorePreferences)
+    protected readonly corePreferences: CorePreferences;
 
     constructor(
         @inject(CommandRegistry) protected readonly commands: CommandRegistry,
@@ -138,6 +155,13 @@ export class FrontendApplication {
      * Register global event listeners.
      */
     protected registerEventListeners(): void {
+        window.addEventListener('beforeunload', event => {
+            if (this.preventStop()) {
+                event.returnValue = '';
+                event.preventDefault();
+                return '';
+            }
+        });
         window.addEventListener('unload', () => {
             this.stateService.state = 'closing_window';
             this.layoutRestorer.storeLayout(this);
@@ -215,11 +239,31 @@ export class FrontendApplication {
      * method in order to create an application-specific custom layout.
      */
     protected async createDefaultLayout(): Promise<void> {
-        for (const initializer of this.contributions.getContributions()) {
-            if (initializer.initializeLayout) {
-                await initializer.initializeLayout(this);
+        for (const contribution of this.contributions.getContributions()) {
+            if (contribution.initializeLayout) {
+                await this.measure(contribution.constructor.name + '.initializeLayout',
+                    () => contribution.initializeLayout!(this)
+                );
             }
         }
+    }
+
+    /**
+     * `beforeunload` listener implementation
+     */
+    protected preventStop(): boolean {
+        const confirmExit = this.corePreferences['application.confirmExit'];
+        if (confirmExit === 'never') {
+            return false;
+        }
+        for (const contribution of this.contributions.getContributions()) {
+            if (contribution.onWillStop) {
+                if (!!contribution.onWillStop(this)) {
+                    return true;
+                }
+            }
+        }
+        return confirmExit === 'always';
     }
 
     /**
@@ -236,6 +280,16 @@ export class FrontendApplication {
             }
         }
 
+        for (const contribution of this.contributions.getContributions()) {
+            if (contribution.configure) {
+                try {
+                    await contribution.configure(this);
+                } catch (error) {
+                    this.logger.error('Could not configure contribution', error);
+                }
+            }
+        }
+
         /**
          * FIXME:
          * - decouple commands & menus
@@ -247,7 +301,9 @@ export class FrontendApplication {
         for (const contribution of this.contributions.getContributions()) {
             if (contribution.onStart) {
                 try {
-                    await contribution.onStart(this);
+                    await this.measure(contribution.constructor.name + '.onStart',
+                        () => contribution.onStart!(this)
+                    );
                 } catch (error) {
                     this.logger.error('Could not start contribution', error);
                 }
@@ -268,6 +324,24 @@ export class FrontendApplication {
                 }
             }
         }
+    }
+
+    protected async measure<T>(name: string, fn: () => MaybePromise<T>): Promise<T> {
+        const startMark = name + '-start';
+        const endMark = name + '-end';
+        performance.mark(startMark);
+        const result = await fn();
+        performance.mark(endMark);
+        performance.measure(name, startMark, endMark);
+        for (const item of performance.getEntriesByName(name)) {
+            if (item.duration > 100) {
+                console.warn(item.name + ' is slow, took: ' + item.duration + ' ms');
+            } else {
+                console.debug(item.name + ' took ' + item.duration + ' ms');
+            }
+        }
+        performance.clearMeasures(name);
+        return result;
     }
 
 }

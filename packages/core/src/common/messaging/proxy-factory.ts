@@ -14,6 +14,8 @@
  * SPDX-License-Identifier: EPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0
  ********************************************************************************/
 
+// tslint:disable:no-any
+
 import { MessageConnection, ResponseError } from 'vscode-jsonrpc';
 import { ApplicationError } from '../application-error';
 import { Event, Emitter } from '../event';
@@ -271,11 +273,11 @@ export class JsonRpcProxyFactory<T extends object> implements ProxyHandler<T> {
     }
     protected deserializeError(capturedError: Error, e: any): any {
         if (e instanceof ResponseError) {
-            const capturedStack = capturedError.stack || '';
+            const capturedStack = capturedError.stack || '';
             if (e.data && e.data.kind === 'application') {
-                const { stack, data } = e.data;
+                const { stack, data, message } = e.data;
                 return ApplicationError.fromJson(e.code, {
-                    message: capturedError.message,
+                    message: message || capturedError.message,
                     data,
                     stack: `${capturedStack}\nCaused by: ${stack}`
                 });

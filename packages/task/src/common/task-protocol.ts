@@ -22,9 +22,15 @@ export const TaskServer = Symbol('TaskServer');
 export const TaskClient = Symbol('TaskClient');
 
 export interface TaskConfiguration {
-    readonly type: string;
-    /** A label that uniquely identifies a task configuration */
+    /**
+     * Source of the task configuration.
+     * For a configured task, it is the name of the root folder, while for a provided task, it is the name of the provider.
+     * This field is not supposed to be used in `tasks.json`
+     */
+    readonly _source: string;
+    /** A label that uniquely identifies a task configuration per source */
     readonly label: string;
+    readonly type: string;
     /** Additional task type specific properties. */
     // tslint:disable-next-line:no-any
     readonly [key: string]: any;
@@ -65,7 +71,9 @@ export interface TaskServer extends JsonRpcServer<TaskClient> {
 export interface TaskExitedEvent {
     readonly taskId: number;
     readonly ctx?: string;
-    readonly code: number;
+
+    // Exactly one of code and signal will be set.
+    readonly code?: number;
     readonly signal?: string;
 }
 

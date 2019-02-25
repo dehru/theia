@@ -28,9 +28,11 @@ import { LabelProvider } from '@theia/core/lib/browser/label-provider';
 import { Command } from '@theia/core/lib/common';
 import { NavigationLocationService } from '@theia/editor/lib/browser/navigation/navigation-location-service';
 import * as fuzzy from 'fuzzy';
+import { MessageService } from '@theia/core/lib/common/message-service';
 
 export const quickFileOpen: Command = {
     id: 'file-search.openFile',
+    category: 'File',
     label: 'Open File...'
 };
 
@@ -53,6 +55,8 @@ export class QuickFileOpenService implements QuickOpenModel, QuickOpenHandler {
     protected readonly labelProvider: LabelProvider;
     @inject(NavigationLocationService)
     protected readonly navigationLocationService: NavigationLocationService;
+    @inject(MessageService)
+    protected readonly messageService: MessageService;
 
     /**
      * Whether to hide .gitignored (and other ignored) files.
@@ -89,6 +93,7 @@ export class QuickFileOpenService implements QuickOpenModel, QuickOpenHandler {
             placeholder,
             fuzzyMatchLabel: true,
             fuzzyMatchDescription: true,
+            showItemsWithoutHighlight: true,
             onClose: () => {
                 this.isOpen = false;
                 this.cancelIndicator.cancel();
@@ -132,47 +137,55 @@ export class QuickFileOpenService implements QuickOpenModel, QuickOpenHandler {
     private cancelIndicator = new CancellationTokenSource();
 
     public async onType(lookFor: string, acceptor: (items: QuickOpenItem[]) => void): Promise<void> {
-        const workspaceFolder = this.workspaceService.tryGetRoots()[0];
-        if (!workspaceFolder) {
+        const roots = this.workspaceService.tryGetRoots();
+        if (roots.length === 0) {
             return;
         }
 
         this.currentLookFor = lookFor;
-
         this.cancelIndicator.cancel();
         this.cancelIndicator = new CancellationTokenSource();
+
         const token = this.cancelIndicator.token;
-
-        const rootUri = workspaceFolder.uri;
-        const root = new URI(rootUri);
         const alreadyCollected = new Set<string>();
-
         const recentlyUsedItems: QuickOpenItem[] = [];
+
         const locations = [...this.navigationLocationService.locations()].reverse();
         for (const location of locations) {
             const uriString = location.uri.toString();
             if (!alreadyCollected.has(uriString) && fuzzy.test(lookFor, uriString)) {
-                recentlyUsedItems.push(await this.toItem(location.uri, recentlyUsedItems.length === 0 ? 'recently opened' : undefined));
+                recentlyUsedItems.push(await this.toItem(location.uri, { groupLabel: recentlyUsedItems.length === 0 ? 'recently opened' : undefined, showBorder: false }));
                 alreadyCollected.add(uriString);
             }
         }
         if (lookFor.length > 0) {
-            const handler = async (result: string[]) => {
+            const handler = async (results: string[]) => {
                 if (!token.isCancellationRequested) {
                     const fileSearchResultItems: QuickOpenItem[] = [];
-                    for (const p of result) {
-                        const uri = root.withPath(root.path.join(p));
-                        const uriString = uri.toString();
-                        if (!alreadyCollected.has(uriString)) {
-                            fileSearchResultItems.push(await this.toItem(uri, fileSearchResultItems.length === 0 ? 'file results' : undefined));
-                            alreadyCollected.add(uriString);
+                    for (const fileUri of results) {
+                        if (!alreadyCollected.has(fileUri)) {
+                            fileSearchResultItems.push(await this.toItem(fileUri));
+                            alreadyCollected.add(fileUri);
                         }
                     }
-                    acceptor([...recentlyUsedItems, ...fileSearchResultItems]);
+
+                    // Create a copy of the file search results and sort.
+                    const sortedResults = fileSearchResultItems.slice();
+                    sortedResults.sort((a, b) => this.compareItems(a, b));
+
+                    // Extract the first element, and re-add it to the array with the group label.
+                    const first = sortedResults[0];
+                    sortedResults.shift();
+                    if (first) {
+                        sortedResults.unshift(await this.toItem(first.getUri()!, { groupLabel: 'file results', showBorder: true }));
+                    }
+
+                    // Return the recently used items, followed by the search results.
+                    acceptor([...recentlyUsedItems, ...sortedResults]);
                 }
             };
             this.fileSearchService.find(lookFor, {
-                rootUri,
+                rootUris: roots.map(r => r.uri),
                 fuzzyMatch: true,
                 limit: 200,
                 useGitIgnore: this.hideIgnoredFiles,
@@ -187,27 +200,124 @@ export class QuickFileOpenService implements QuickOpenModel, QuickOpenHandler {
             if (mode !== QuickOpenMode.OPEN) {
                 return false;
             }
-            this.openerService.getOpener(uri).then(opener => opener.open(uri));
+            this.openFile(uri);
             return true;
         };
     }
 
-    private async toItem(uriOrString: URI | string, group?: string) {
+    /**
+     * Compare two `QuickOpenItem`.
+     *
+     * @param a `QuickOpenItem` for comparison.
+     * @param b `QuickOpenItem` for comparison.
+     * @param member the `QuickOpenItem` object member for comparison.
+     */
+    protected compareItems(
+        a: QuickOpenItem<QuickOpenItemOptions>,
+        b: QuickOpenItem<QuickOpenItemOptions>,
+        member: 'getLabel' | 'getUri' = 'getLabel'): number {
+
+        /**
+         * Normalize a given string.
+         *
+         * @param str the raw string value.
+         * @returns the normalized string value.
+         */
+        function normalize(str: string) {
+            return str.trim().toLowerCase();
+        }
+
+        // Normalize the user query.
+        const query: string = normalize(this.currentLookFor);
+
+        /**
+         * Score a given string.
+         *
+         * @param str the string to score on.
+         * @returns the score.
+         */
+        function score(str: string): number {
+            const match = fuzzy.match(query, str);
+            return (match === null) ? 0 : match.score;
+        }
+
+        // Get the item's member values for comparison.
+        let itemA = a[member]()!;
+        let itemB = b[member]()!;
+
+        // If the `URI` is used as a comparison member, perform the necessary string conversions.
+        if (typeof itemA !== 'string') {
+            itemA = itemA.path.toString();
+        }
+        if (typeof itemB !== 'string') {
+            itemB = itemB.path.toString();
+        }
+
+        // Normalize the item labels.
+        itemA = normalize(itemA);
+        itemB = normalize(itemB);
+
+        // Score the item labels.
+        const scoreA: number = score(itemA);
+        const scoreB: number = score(itemB);
+
+        // If both label scores are identical, perform additional computation.
+        if (scoreA === scoreB) {
+
+            // Favor the label which have the smallest substring index.
+            const indexA: number = itemA.indexOf(query);
+            const indexB: number = itemB.indexOf(query);
+
+            if (indexA === indexB) {
+
+                // Favor the result with the shortest label length.
+                if (itemA.length !== itemB.length) {
+                    return (itemA.length < itemB.length) ? -1 : 1;
+                }
+
+                // Fallback to the alphabetical order.
+                const comparison = itemB.localeCompare(itemA);
+
+                // If the alphabetical comparison is equal, call `compareItems` recursively using the `URI` member instead.
+                if (comparison === 0) {
+                    return this.compareItems(a, b, 'getUri');
+                }
+
+                return itemB.localeCompare(itemA);
+            }
+
+            return indexA - indexB;
+        }
+
+        return scoreB - scoreA;
+    }
+
+    openFile(uri: URI): void {
+        this.openerService.getOpener(uri)
+            .then(opener => opener.open(uri))
+            .catch(error => this.messageService.error(error));
+    }
+
+    private async toItem(uriOrString: URI | string, group?: QuickOpenGroupItemOptions) {
         const uri = uriOrString instanceof URI ? uriOrString : new URI(uriOrString);
+        let description = this.labelProvider.getLongName(uri.parent);
+        if (this.workspaceService.workspace && !this.workspaceService.workspace.isDirectory) {
+            const rootUri = this.workspaceService.getWorkspaceRootUri(uri);
+            if (rootUri) {
+                description = `${rootUri.displayName} • ${description}`;
+            }
+        }
         const options: QuickOpenItemOptions = {
             label: this.labelProvider.getName(uri),
             iconClass: await this.labelProvider.getIcon(uri) + ' file-icon',
-            description: this.labelProvider.getLongName(uri.parent),
+            description,
             tooltip: uri.path.toString(),
             uri: uri,
             hidden: false,
             run: this.getRunFunction(uri)
         };
         if (group) {
-            return new QuickOpenGroupItem<QuickOpenGroupItemOptions>({
-                ...options,
-                groupLabel: group
-            });
+            return new QuickOpenGroupItem<QuickOpenGroupItemOptions>({ ...options, ...group });
         } else {
             return new QuickOpenItem<QuickOpenItemOptions>(options);
         }

@@ -20,6 +20,7 @@ import * as theia from '@theia/plugin';
 import * as types from './types-impl';
 import * as model from '../api/model';
 import { MarkdownString, isMarkdownString } from './markdown-string';
+import { ProcessTaskDto, TaskDto } from '../api/plugin-api';
 
 describe('Type converters:', () => {
 
@@ -167,4 +168,151 @@ describe('Type converters:', () => {
 
     });
 
+    describe('convert tasks:', () => {
+        const type = 'shell';
+        const label = 'yarn build';
+        const source = 'source';
+        const command = 'yarn';
+        const args = ['run', 'build'];
+        const cwd = '/projects/theia';
+        const additionalProperty = 'some property';
+
+        const shellTaskDto: ProcessTaskDto = {
+            type,
+            label,
+            source,
+            command,
+            args,
+            cwd,
+            options: {},
+            additionalProperty
+        };
+
+        const shellPluginTask: theia.Task = {
+            name: label,
+            source,
+            definition: {
+                type,
+                additionalProperty
+            },
+            execution: {
+                command,
+                args,
+                options: {
+                    cwd
+                }
+            }
+        };
+
+        const taskDtoWithCommandLine: ProcessTaskDto = {
+            type,
+            label,
+            source,
+            command,
+            args,
+            cwd,
+            options: {}
+        };
+
+        const pluginTaskWithCommandLine: theia.Task = {
+            name: label,
+            source,
+            definition: {
+                type
+            },
+            execution: {
+                commandLine: 'yarn run build',
+                options: {
+                    cwd
+                }
+            }
+        };
+
+        it('should convert to task dto', () => {
+            // when
+            const result: TaskDto | undefined = Converter.fromTask(shellPluginTask);
+
+            // then
+            assert.notEqual(result, undefined);
+            assert.deepEqual(result, shellTaskDto);
+        });
+
+        it('should convert from task dto', () => {
+            // when
+            const result: theia.Task = Converter.toTask(shellTaskDto);
+
+            // then
+            assert.notEqual(result, undefined);
+            assert.deepEqual(result, shellPluginTask);
+        });
+
+        it('should convert to task dto from task with commandline', () => {
+            // when
+            const result: TaskDto | undefined = Converter.fromTask(pluginTaskWithCommandLine);
+
+            // then
+            assert.notEqual(result, undefined);
+            assert.deepEqual(result, taskDtoWithCommandLine);
+        });
+    });
+
+    describe('Webview Panel Show Options:', () => {
+        it('should create options from view column ', () => {
+            const viewColumn = types.ViewColumn.Five;
+
+            const showOptions: theia.WebviewPanelShowOptions = {
+                area: types.WebviewPanelTargetArea.Main,
+                viewColumn: types.ViewColumn.Four,
+                preserveFocus: false
+            };
+
+            // when
+            const result: theia.WebviewPanelShowOptions = Converter.toWebviewPanelShowOptions(viewColumn);
+
+            // then
+            assert.notEqual(result, undefined);
+            assert.deepEqual(result, showOptions);
+        });
+
+        it('should create options from given "WebviewPanelShowOptions" object ', () => {
+            const incomingObject: theia.WebviewPanelShowOptions = {
+                area: types.WebviewPanelTargetArea.Main,
+                viewColumn: types.ViewColumn.Five,
+                preserveFocus: true
+            };
+
+            const showOptions: theia.WebviewPanelShowOptions = {
+                area: types.WebviewPanelTargetArea.Main,
+                viewColumn: types.ViewColumn.Four,
+                preserveFocus: true
+            };
+
+            // when
+            const result: theia.WebviewPanelShowOptions = Converter.toWebviewPanelShowOptions(incomingObject);
+
+            // then
+            assert.notEqual(result, undefined);
+            assert.deepEqual(result, showOptions);
+        });
+
+        it('should set default "main" area', () => {
+            const incomingObject: theia.WebviewPanelShowOptions = {
+                viewColumn: types.ViewColumn.Five,
+                preserveFocus: false
+            };
+
+            const showOptions: theia.WebviewPanelShowOptions = {
+                area: types.WebviewPanelTargetArea.Main,
+                viewColumn: types.ViewColumn.Four,
+                preserveFocus: false
+            };
+
+            // when
+            const result: theia.WebviewPanelShowOptions = Converter.toWebviewPanelShowOptions(incomingObject);
+
+            // then
+            assert.notEqual(result, undefined);
+            assert.deepEqual(result, showOptions);
+        });
+    });
 });

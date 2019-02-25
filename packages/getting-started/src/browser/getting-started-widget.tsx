@@ -18,13 +18,14 @@ import * as React from 'react';
 import URI from '@theia/core/lib/common/uri';
 import { injectable, inject, postConstruct } from 'inversify';
 import { ReactWidget } from '@theia/core/lib/browser/widgets/react-widget';
-import { CommandRegistry } from '@theia/core/lib/common';
+import { CommandRegistry, isOSX, environment } from '@theia/core/lib/common';
 import { WorkspaceCommands, WorkspaceService } from '@theia/workspace/lib/browser';
 import { FileStat, FileSystem } from '@theia/filesystem/lib/common/filesystem';
 import { FileSystemUtils } from '@theia/filesystem/lib/common/filesystem-utils';
 import { KeymapsCommands } from '@theia/keymaps/lib/browser';
 import { CommonCommands } from '@theia/core/lib/browser';
 import { ApplicationInfo, ApplicationServer } from '@theia/core/lib/common/application-protocol';
+import { FrontendApplicationConfigProvider } from '@theia/core/lib/browser/frontend-application-config-provider';
 
 @injectable()
 export class GettingStartedWidget extends ReactWidget {
@@ -33,6 +34,7 @@ export class GettingStartedWidget extends ReactWidget {
     static readonly LABEL = 'Getting Started';
 
     protected applicationInfo: ApplicationInfo | undefined;
+    protected applicationName = FrontendApplicationConfigProvider.get().applicationName;
 
     protected stat: FileStat | undefined;
     protected home: string | undefined;
@@ -104,22 +106,22 @@ export class GettingStartedWidget extends ReactWidget {
 
     protected renderHeader(): React.ReactNode {
         return <div className='gs-header'>
-            <h1>Theia <span className='gs-sub-header'>Getting Started</span></h1>
+            <h1>{this.applicationName}<span className='gs-sub-header'> Getting Started</span></h1>
         </div>;
     }
 
     protected renderOpen(): React.ReactNode {
+        const requireSingleOpen = isOSX || !environment.electron.is();
+        const open = (requireSingleOpen) ? <div className='gs-action-container'><a href='#' onClick={this.doOpen}>Open</a></div> : '';
+        const openFile = (!requireSingleOpen) ? <div className='gs-action-container'><a href='#' onClick={this.doOpenFile}>Open File</a></div> : '';
+        const openFolder = (!requireSingleOpen) ? <div className='gs-action-container'><a href='#' onClick={this.doOpenFolder}>Open Folder</a></div> : '';
+        const openWorkspace = <a href='#' onClick={this.doOpenWorkspace}>Open Workspace</a>;
         return <div className='gs-section'>
-            <h3 className='gs-section-header'>
-                <i className='fa fa-folder-open'></i>
-                Open
-            </h3>
-            <div className='gs-action-container'>
-                <a href='#' onClick={this.doOpen}>Open</a>
-            </div>
-            <div className='gs-action-container'>
-                <a href='#' onClick={this.doOpenWorkspace}>Open Workspace</a>
-            </div>
+            <h3 className='gs-section-header'><i className='fa fa-folder-open'></i>Open</h3>
+            {open}
+            {openFile}
+            {openFolder}
+            {openWorkspace}
         </div>;
     }
 
@@ -182,7 +184,7 @@ export class GettingStartedWidget extends ReactWidget {
     protected renderVersion(): React.ReactNode {
         return <div className='gs-section'>
             <div className='gs-action-container'>
-                <p className='gs-sub-header gs-version' >
+                <p className='gs-sub-header' >
                     {this.applicationInfo ? 'Version ' + this.applicationInfo.version : ''}
                 </p>
             </div>
@@ -200,6 +202,8 @@ export class GettingStartedWidget extends ReactWidget {
     }
 
     protected doOpen = () => this.commandRegistry.executeCommand(WorkspaceCommands.OPEN.id);
+    protected doOpenFile = () => this.commandRegistry.executeCommand(WorkspaceCommands.OPEN_FILE.id);
+    protected doOpenFolder = () => this.commandRegistry.executeCommand(WorkspaceCommands.OPEN_FOLDER.id);
     protected doOpenWorkspace = () => this.commandRegistry.executeCommand(WorkspaceCommands.OPEN_WORKSPACE.id);
     protected doOpenRecentWorkspace = () => this.commandRegistry.executeCommand(WorkspaceCommands.OPEN_RECENT_WORKSPACE.id);
     protected doOpenPreferences = () => this.commandRegistry.executeCommand(CommonCommands.OPEN_PREFERENCES.id);

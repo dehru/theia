@@ -54,14 +54,15 @@
             "name": "Launch Backend",
             "program": "${workspaceRoot}/examples/browser/src-gen/backend/main.js",
             "args": [
-                "--log-level=debug",
+                "--hostname=0.0.0.0",
                 "--port=3000",
                 "--no-cluster",
                 "--app-project-path=${workspaceRoot}/examples/browser",
                 "--no-app-auto-install"
             ],
             "env": {
-                "NODE_ENV": "development"
+                "NODE_ENV": "development",
+                "THEIA_DEFAULT_PLUGINS": "local-dir:plugins"
             },
             "sourceMaps": true,
             "outFiles": [
@@ -107,11 +108,11 @@
             "name": "Run Mocha Test",
             "program": "${workspaceRoot}/node_modules/mocha/bin/_mocha",
             "args": [
-                "${file}",
                 "--no-timeouts",
                 "--colors",
                 "--opts",
-                "${workspaceRoot}/configs/mocha.opts"
+                "${workspaceRoot}/configs/mocha.opts",
+                "**/${fileBasenameNoExtension}.js"
             ],
             "env": {
                 "TS_NODE_PROJECT": "${workspaceRoot}/tsconfig.json"

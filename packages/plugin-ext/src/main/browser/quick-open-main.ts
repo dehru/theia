@@ -20,7 +20,7 @@ import { QuickOpenModel, QuickOpenItem, QuickOpenMode } from '@theia/core/lib/br
 import { RPCProtocol } from '../../api/rpc-protocol';
 import { QuickOpenExt, QuickOpenMain, MAIN_RPC_CONTEXT, PickOptions, PickOpenItem } from '../../api/plugin-api';
 import { MonacoQuickOpenService } from '@theia/monaco/lib/browser/monaco-quick-open-service';
-import { QuickInputService } from '@theia/monaco/lib/browser/monaco-quick-input-service';
+import { QuickInputService } from '@theia/core/lib/browser';
 
 export class QuickOpenMainImpl implements QuickOpenMain, QuickOpenModel {
 
@@ -74,13 +74,13 @@ export class QuickOpenMainImpl implements QuickOpenMain, QuickOpenModel {
                 description: i.description,
                 detail: i.detail,
                 run: mode => {
-                    if (mode === QuickOpenMode.PREVIEW) {
+                    if (mode === QuickOpenMode.OPEN) {
                         this.proxy.$onItemSelected(i.handle);
-                    } else if (mode === QuickOpenMode.OPEN) {
                         this.doResolve(i.handle);
                         this.cleanUp();
+                        return true;
                     }
-                    return true;
+                    return false;
                 }
             }));
         }

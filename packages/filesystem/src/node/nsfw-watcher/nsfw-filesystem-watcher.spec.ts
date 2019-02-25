@@ -39,6 +39,7 @@ describe('nsfw-filesystem-watcher', function () {
         root = FileUri.create(fs.realpathSync(temp.mkdirSync('node-fs-root')));
         watcherServer = createNsfwFileSystemWatcherServer();
         watcherId = await watcherServer.watchFileChanges(root.toString());
+        await sleep(2000);
     });
 
     afterEach(async () => {
@@ -125,6 +126,7 @@ describe('nsfw-filesystem-watcher', function () {
 
 });
 
+// tslint:disable-next-line:no-any
 process.on('unhandledRejection', (reason: any) => {
     console.error('Unhandled promise rejection: ' + reason);
 });

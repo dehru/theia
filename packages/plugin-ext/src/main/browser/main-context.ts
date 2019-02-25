@@ -30,6 +30,13 @@ import { TerminalServiceMainImpl } from './terminal-main';
 import { LanguagesMainImpl } from './languages-main';
 import { DialogsMainImpl } from './dialogs-main';
 import { TreeViewsMainImpl } from './view/tree-views-main';
+import { NotificationMainImpl } from './notification-main';
+import { ConnectionMainImpl } from './connection-main';
+import { WebviewsMainImpl } from './webviews-main';
+import { TasksMainImpl } from './tasks-main';
+import { StorageMainImpl } from './plugin-storage';
+import { LanguagesContributionMainImpl } from './languages-contribution-main';
+import { DebugMainImpl } from './debug/debug-main';
 
 export function setUpPluginApi(rpc: RPCProtocol, container: interfaces.Container): void {
     const commandRegistryMain = new CommandRegistryMainImpl(rpc, container);
@@ -61,6 +68,9 @@ export function setUpPluginApi(rpc: RPCProtocol, container: interfaces.Container
     const envMain = new EnvMainImpl(rpc, container);
     rpc.set(PLUGIN_RPC_CONTEXT.ENV_MAIN, envMain);
 
+    const notificationMain = new NotificationMainImpl(rpc, container);
+    rpc.set(PLUGIN_RPC_CONTEXT.NOTIFICATION_MAIN, notificationMain);
+
     const terminalMain = new TerminalServiceMainImpl(rpc, container);
     rpc.set(PLUGIN_RPC_CONTEXT.TERMINAL_MAIN, terminalMain);
 
@@ -70,6 +80,24 @@ export function setUpPluginApi(rpc: RPCProtocol, container: interfaces.Container
     const outputChannelRegistryMain = new OutputChannelRegistryMainImpl(container);
     rpc.set(PLUGIN_RPC_CONTEXT.OUTPUT_CHANNEL_REGISTRY_MAIN, outputChannelRegistryMain);
 
-    const languagesMain = new LanguagesMainImpl(rpc);
+    const languagesMain = new LanguagesMainImpl(rpc, container);
     rpc.set(PLUGIN_RPC_CONTEXT.LANGUAGES_MAIN, languagesMain);
+
+    const webviewsMain = new WebviewsMainImpl(rpc, container);
+    rpc.set(PLUGIN_RPC_CONTEXT.WEBVIEWS_MAIN, webviewsMain);
+
+    const storageMain = new StorageMainImpl(container);
+    rpc.set(PLUGIN_RPC_CONTEXT.STORAGE_MAIN, storageMain);
+
+    const connectionMain = new ConnectionMainImpl(rpc);
+    rpc.set(PLUGIN_RPC_CONTEXT.CONNECTION_MAIN, connectionMain);
+
+    const tasksMain = new TasksMainImpl(rpc, container);
+    rpc.set(PLUGIN_RPC_CONTEXT.TASKS_MAIN, tasksMain);
+
+    const languagesContribution = new LanguagesContributionMainImpl(rpc, container, connectionMain);
+    rpc.set(PLUGIN_RPC_CONTEXT.LANGUAGES_CONTRIBUTION_MAIN, languagesContribution);
+
+    const debugMain = new DebugMainImpl(rpc, connectionMain, container);
+    rpc.set(PLUGIN_RPC_CONTEXT.DEBUG_MAIN, debugMain);
 }

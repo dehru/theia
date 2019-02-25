@@ -18,19 +18,21 @@ import { injectable, inject, postConstruct } from 'inversify';
 import { Message } from '@phosphor/messaging';
 import URI from '@theia/core/lib/common/uri';
 import { CommandService, SelectionService } from '@theia/core/lib/common';
-import { CommonCommands } from '@theia/core/lib/browser';
+import { CommonCommands, CorePreferences } from '@theia/core/lib/browser';
 import {
     ContextMenuRenderer, ExpandableTreeNode,
     TreeProps, TreeModel, TreeNode,
     SelectableTreeNode, CompositeTreeNode
 } from '@theia/core/lib/browser';
-import { FileTreeWidget, FileNode } from '@theia/filesystem/lib/browser';
+import { FileTreeWidget, FileNode, DirNode } from '@theia/filesystem/lib/browser';
 import { WorkspaceService, WorkspaceCommands } from '@theia/workspace/lib/browser';
 import { ApplicationShell } from '@theia/core/lib/browser/shell/application-shell';
 import { WorkspaceNode } from './navigator-tree';
 import { FileNavigatorModel } from './navigator-model';
 import { FileSystem } from '@theia/filesystem/lib/common/filesystem';
+import { isOSX, environment } from '@theia/core';
 import * as React from 'react';
+import { NavigatorContextKeyService } from './navigator-context-key-service';
 
 export const FILE_NAVIGATOR_ID = 'files';
 export const LABEL = 'Files';
@@ -38,6 +40,11 @@ export const CLASS = 'theia-Files';
 
 @injectable()
 export class FileNavigatorWidget extends FileTreeWidget {
+
+    @inject(CorePreferences) protected readonly corePreferences: CorePreferences;
+
+    @inject(NavigatorContextKeyService)
+    protected readonly contextKeyService: NavigatorContextKeyService;
 
     constructor(
         @inject(TreeProps) readonly props: TreeProps,
@@ -61,11 +68,13 @@ export class FileNavigatorWidget extends FileTreeWidget {
     @postConstruct()
     protected init(): void {
         super.init();
+        this.updateSelectionContextKeys();
         this.toDispose.pushAll([
             this.model.onSelectionChanged(selection => {
                 if (this.shell.activeWidget === this) {
                     this.selectionService.selection = selection;
                 }
+                this.updateSelectionContextKeys();
             }),
             this.model.onExpansionChanged(node => {
                 if (node.expanded && node.children.length === 1) {
@@ -172,9 +181,16 @@ export class FileNavigatorWidget extends FileTreeWidget {
         }
     }
 
+    protected canOpenWorkspaceFileAndFolder: boolean = isOSX || !environment.electron.is();
+
     protected readonly openWorkspace = () => this.doOpenWorkspace();
     protected doOpenWorkspace() {
         this.commandService.executeCommand(WorkspaceCommands.OPEN_WORKSPACE.id);
+    }
+
+    protected readonly openFolder = () => this.doOpenFolder();
+    protected doOpenFolder() {
+        this.commandService.executeCommand(WorkspaceCommands.OPEN_FOLDER.id);
     }
 
     /**
@@ -182,14 +198,45 @@ export class FileNavigatorWidget extends FileTreeWidget {
      * button when the workspace root is not yet set.
      */
     protected renderOpenWorkspaceDiv(): React.ReactNode {
+        let openButton;
+
+        if (this.canOpenWorkspaceFileAndFolder) {
+            openButton = <button className='open-workspace-button' title='Select a folder or a workspace-file to open as your workspace' onClick={this.openWorkspace}>
+                Open Workspace
+            </button>;
+        } else {
+            openButton = <button className='open-workspace-button' title='Select a folder as your workspace root' onClick={this.openFolder}>
+                Open Folder
+            </button>;
+        }
+
         return <div className='theia-navigator-container'>
             <div className='center'>You have not yet opened a workspace.</div>
             <div className='open-workspace-button-container'>
-                <button className='open-workspace-button' title='Select a folder as your workspace root' onClick={this.openWorkspace}>
-                    Open Workspace
-                </button>
+                {openButton}
             </div>
         </div>;
+    }
+
+    protected handleClickEvent(node: TreeNode | undefined, event: React.MouseEvent<HTMLElement>): void {
+        if (node && this.corePreferences['list.openMode'] === 'singleClick') {
+            this.model.previewNode(node);
+        }
+        super.handleClickEvent(node, event);
+    }
+
+    protected onAfterShow(msg: Message): void {
+        super.onAfterShow(msg);
+        this.contextKeyService.explorerViewletVisible.set(true);
+    }
+
+    protected onAfterHide(msg: Message): void {
+        super.onAfterHide(msg);
+        this.contextKeyService.explorerViewletVisible.set(false);
+    }
+
+    protected updateSelectionContextKeys(): void {
+        this.contextKeyService.explorerResourceIsFolder.set(DirNode.is(this.model.selectedNodes[0]));
     }
 
 }

@@ -30,6 +30,7 @@ import { FrontendApplicationStateService } from './frontend-application-state';
 import * as os from '../common/os';
 import * as chai from 'chai';
 import * as sinon from 'sinon';
+import { ContextKeyService } from './context-key-service';
 
 disableJSDOM();
 
@@ -58,7 +59,7 @@ before(async () => {
 
         bind(TestContribution).toSelf().inSingletonScope();
         [CommandContribution, KeybindingContribution].forEach(serviceIdentifier =>
-            bind(serviceIdentifier).toDynamicValue(ctx => ctx.container.get(TestContribution)).inSingletonScope()
+            bind(serviceIdentifier).toService(TestContribution)
         );
 
         bind(KeybindingContext).toConstantValue({
@@ -69,9 +70,10 @@ before(async () => {
         });
 
         bind(StatusBarImpl).toSelf().inSingletonScope();
-        bind(StatusBar).toDynamicValue(ctx => ctx.container.get(StatusBarImpl)).inSingletonScope();
-        bind(CommandService).toDynamicValue(context => context.container.get(CommandRegistry));
+        bind(StatusBar).toService(StatusBarImpl);
+        bind(CommandService).toService(CommandRegistry);
         bind(LabelParser).toSelf().inSingletonScope();
+        bind(ContextKeyService).toSelf().inSingletonScope();
         bind(FrontendApplicationStateService).toSelf().inSingletonScope();
     });
 
@@ -155,10 +157,10 @@ describe('keybindings', () => {
 
         const bindings = keybindingRegistry.getKeybindingsForCommand(TEST_COMMAND2.id);
         if (bindings) {
-            expect(bindings.length).to.be.equal(2);
+            expect(bindings.length).to.be.equal(1);
             const keyCode = KeyCode.parse(bindings[0].keybinding);
-            expect(keyCode.key).to.be.equal(Key.F1);
-            expect(keyCode.ctrl).to.be.true;
+            expect(keyCode.key).to.be.equal(Key.F3);
+            expect(keyCode.ctrl).to.be.false;
         }
     });
 
@@ -497,17 +499,30 @@ describe('keys api', () => {
     });
 
     it('it should be a modifier only', () => {
-
         const keyCode = KeyCode.createKeyCode({ modifiers: [KeyModifier.CtrlCmd] });
         expect(keyCode).to.be.deep.equal(KeyCode.createKeyCode({ modifiers: [KeyModifier.CtrlCmd] }));
         expect(keyCode.isModifierOnly()).to.be.true;
     });
 
     it('it should be multiple modifiers only', () => {
-
         const keyCode = KeyCode.createKeyCode({ modifiers: [KeyModifier.CtrlCmd, KeyModifier.Alt] });
         expect(keyCode).to.be.deep.equal(KeyCode.createKeyCode({ modifiers: [KeyModifier.CtrlCmd, KeyModifier.Alt] }));
         expect(keyCode.isModifierOnly()).to.be.true;
+    });
+
+    it('it should translate non US layout chords properly', () => {
+        // mimic a german layout, i.e. the '/' is on the 'Shift+7'.
+        const keyCode = new KeyCode(KeyCode.parse('ctrlcmd+shift+7').keystroke, '/');
+        const normalized = keyCode.normalizeToUsLayout();
+        expect(normalized).to.be.deep.equal(KeyCode.parse('ctrlcmd+/'));
+    });
+
+    it('parse bogus keybinding', () => {
+        const [first, second] = KeySequence.parse('  Ctrl+sHiFt+F10     b ');
+        expect(first.ctrl).to.be.true;
+        expect(first.shift).to.be.true;
+        expect(first.key).is.equal(Key.F10);
+        expect(second.key).is.equal(Key.KEY_B);
     });
 });
 

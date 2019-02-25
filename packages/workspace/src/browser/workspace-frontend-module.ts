@@ -32,7 +32,7 @@ import { LabelProviderContribution } from '@theia/core/lib/browser/label-provide
 import { VariableContribution } from '@theia/variable-resolver/lib/browser';
 import { WorkspaceServer, workspacePath } from '../common';
 import { WorkspaceFrontendContribution } from './workspace-frontend-contribution';
-import { WorkspaceService, IWorkspaceService } from './workspace-service';
+import { WorkspaceService } from './workspace-service';
 import { WorkspaceCommandContribution, FileMenuContribution } from './workspace-commands';
 import { WorkspaceVariableContribution } from './workspace-variable-contribution';
 import { WorkspaceStorageService } from './workspace-storage-service';
@@ -40,13 +40,16 @@ import { WorkspaceUriLabelProviderContribution } from './workspace-uri-contribut
 import { bindWorkspacePreferences } from './workspace-preferences';
 import { QuickOpenWorkspace } from './quick-open-workspace';
 import { WorkspaceDeleteHandler } from './workspace-delete-handler';
+import { WorkspaceDuplicateHandler } from './workspace-duplicate-handler';
+import { WorkspaceUtils } from './workspace-utils';
+import { WorkspaceCompareHandler } from './workspace-compare-handler';
+import { DiffService } from './diff-service';
 
 export default new ContainerModule((bind: interfaces.Bind, unbind: interfaces.Unbind, isBound: interfaces.IsBound, rebind: interfaces.Rebind) => {
     bindWorkspacePreferences(bind);
 
     bind(WorkspaceService).toSelf().inSingletonScope();
-    bind(IWorkspaceService).toService(WorkspaceService);
-    bind(FrontendApplicationContribution).toDynamicValue(ctx => ctx.container.get(WorkspaceService));
+    bind(FrontendApplicationContribution).toService(WorkspaceService);
     bind(WorkspaceServer).toDynamicValue(ctx => {
         const provider = ctx.container.get(WebSocketConnectionProvider);
         return provider.createProxy<WorkspaceServer>(workspacePath);
@@ -54,9 +57,7 @@ export default new ContainerModule((bind: interfaces.Bind, unbind: interfaces.Un
 
     bind(WorkspaceFrontendContribution).toSelf().inSingletonScope();
     for (const identifier of [CommandContribution, KeybindingContribution, MenuContribution]) {
-        bind(identifier).toDynamicValue(ctx =>
-            ctx.container.get(WorkspaceFrontendContribution)
-        ).inSingletonScope();
+        bind(identifier).toService(WorkspaceFrontendContribution);
     }
 
     bind(OpenFileDialogFactory).toFactory(ctx =>
@@ -72,12 +73,18 @@ export default new ContainerModule((bind: interfaces.Bind, unbind: interfaces.Un
     bind(CommandContribution).to(WorkspaceCommandContribution).inSingletonScope();
     bind(MenuContribution).to(FileMenuContribution).inSingletonScope();
     bind(WorkspaceDeleteHandler).toSelf().inSingletonScope();
+    bind(WorkspaceDuplicateHandler).toSelf().inSingletonScope();
+    bind(WorkspaceCompareHandler).toSelf().inSingletonScope();
+    bind(DiffService).toSelf().inSingletonScope();
 
     bind(WorkspaceStorageService).toSelf().inSingletonScope();
     rebind(StorageService).toService(WorkspaceStorageService);
 
     bind(LabelProviderContribution).to(WorkspaceUriLabelProviderContribution).inSingletonScope();
-    bind(VariableContribution).to(WorkspaceVariableContribution).inSingletonScope();
+    bind(WorkspaceVariableContribution).toSelf().inSingletonScope();
+    bind(VariableContribution).toService(WorkspaceVariableContribution);
 
     bind(QuickOpenWorkspace).toSelf().inSingletonScope();
+
+    bind(WorkspaceUtils).toSelf().inSingletonScope();
 });

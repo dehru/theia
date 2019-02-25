@@ -23,18 +23,33 @@ import { DebugPath, DebugService } from '../common/debug-service';
 import { WidgetFactory, WebSocketConnectionProvider, FrontendApplicationContribution, bindViewContribution, KeybindingContext } from '@theia/core/lib/browser';
 import { DebugSessionManager } from './debug-session-manager';
 import { DebugResourceResolver } from './debug-resource';
-import { DebugSessionContribution, DebugSessionFactory, DefaultDebugSessionFactory } from './debug-session-contribution';
+import {
+    DebugSessionContribution,
+    DebugSessionFactory,
+    DefaultDebugSessionFactory,
+    DebugSessionContributionRegistry,
+    DebugSessionContributionRegistryImpl
+} from './debug-session-contribution';
 import { bindContributionProvider, ResourceResolver } from '@theia/core';
+import { ContextKeyService } from '@theia/core/lib/browser/context-key-service';
 import { DebugFrontendApplicationContribution } from './debug-frontend-application-contribution';
 import { DebugConsoleContribution } from './console/debug-console-contribution';
 import { BreakpointManager } from './breakpoint/breakpoint-manager';
 import { DebugEditorService } from './editor/debug-editor-service';
 import { DebugViewOptions } from './view/debug-view-model';
 import { DebugSessionWidget, DebugSessionWidgetFactory } from './view/debug-session-widget';
-import { InDebugModeContext } from './debug-keybinding-contexts';
+import { InDebugModeContext, BreakpointWidgetInputFocusContext, BreakpointWidgetInputStrictFocusContext } from './debug-keybinding-contexts';
 import { DebugEditorModelFactory, DebugEditorModel } from './editor/debug-editor-model';
+import './debug-monaco-contribution';
+import { bindDebugPreferences } from './debug-preferences';
+import { DebugSchemaUpdater } from './debug-schema-updater';
+import { DebugCallStackItemTypeKey } from './debug-call-stack-item-type-key';
 
 export default new ContainerModule((bind: interfaces.Bind) => {
+    bind(DebugCallStackItemTypeKey).toDynamicValue(({ container }) =>
+        container.get(ContextKeyService).createKey('callStackItemType', undefined)
+    ).inSingletonScope();
+
     bindContributionProvider(bind, DebugSessionContribution);
     bind(DebugSessionFactory).to(DefaultDebugSessionFactory).inSingletonScope();
     bind(DebugSessionManager).toSelf().inSingletonScope();
@@ -54,6 +69,7 @@ export default new ContainerModule((bind: interfaces.Bind) => {
     })).inSingletonScope();
     DebugConsoleContribution.bindContribution(bind);
 
+    bind(DebugSchemaUpdater).toSelf().inSingletonScope();
     bind(DebugConfigurationManager).toSelf().inSingletonScope();
 
     bind(DebugService).toDynamicValue(context => WebSocketConnectionProvider.createProxy(context.container, DebugPath)).inSingletonScope();
@@ -61,6 +77,13 @@ export default new ContainerModule((bind: interfaces.Bind) => {
     bind(ResourceResolver).toService(DebugResourceResolver);
 
     bind(KeybindingContext).to(InDebugModeContext).inSingletonScope();
+    bind(KeybindingContext).to(BreakpointWidgetInputFocusContext).inSingletonScope();
+    bind(KeybindingContext).to(BreakpointWidgetInputStrictFocusContext).inSingletonScope();
     bindViewContribution(bind, DebugFrontendApplicationContribution);
     bind(FrontendApplicationContribution).toService(DebugFrontendApplicationContribution);
+
+    bind(DebugSessionContributionRegistryImpl).toSelf().inSingletonScope();
+    bind(DebugSessionContributionRegistry).toService(DebugSessionContributionRegistryImpl);
+
+    bindDebugPreferences(bind);
 });

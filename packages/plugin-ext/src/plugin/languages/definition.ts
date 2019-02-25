@@ -22,6 +22,7 @@ import * as Converter from '../type-converters';
 import { Position } from '../../api/plugin-api';
 import { Definition, DefinitionLink, Location } from '../../api/model';
 import { createToken } from '../token-provider';
+import { isDefinitionLinkArray, isLocationArray} from './util';
 
 export class DefinitionAdapter {
 
@@ -70,14 +71,4 @@ export class DefinitionAdapter {
             }
         });
     }
-}
-
-/* tslint:disable-next-line:no-any */
-function isLocationArray(array: any): array is types.Location[] {
-    return Array.isArray(array) && array.length > 0 && array[0] instanceof types.Location;
-}
-
-/* tslint:disable-next-line:no-any */
-function isDefinitionLinkArray(array: any): array is theia.DefinitionLink[] {
-    return Array.isArray(array) && array.length > 0 && array[0].hasOwnProperty('targetUri') && array[0].hasOwnProperty('targetRange');
 }

@@ -29,13 +29,19 @@ export class FileNavigatorModel extends FileTreeModel {
     @inject(WorkspaceService) protected readonly workspaceService: WorkspaceService;
 
     @postConstruct()
-    protected async init(): Promise<void> {
+    protected init(): void {
         this.toDispose.push(
             this.workspaceService.onWorkspaceChanged(event => {
                 this.updateRoot();
             })
         );
         super.init();
+    }
+
+    previewNode(node: TreeNode): void {
+        if (FileNode.is(node)) {
+            open(this.openerService, node.uri, { mode: 'reveal', preview: true });
+        }
     }
 
     protected doOpenNode(node: TreeNode): void {

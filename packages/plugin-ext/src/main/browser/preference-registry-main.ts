@@ -17,31 +17,48 @@
 import {
     PreferenceService,
     PreferenceServiceImpl,
-    PreferenceScope
+    PreferenceScope,
+    PreferenceProviderProvider
 } from '@theia/core/lib/browser/preferences';
 import { interfaces } from 'inversify';
 import {
     MAIN_RPC_CONTEXT,
     PreferenceRegistryExt,
     PreferenceRegistryMain,
+    PreferenceData,
 } from '../../api/plugin-api';
 import { RPCProtocol } from '../../api/rpc-protocol';
 import { ConfigurationTarget } from '../../plugin/types-impl';
 
+export function getPreferences(preferenceProviderProvider: PreferenceProviderProvider): PreferenceData {
+    return PreferenceScope.getScopes().reduce((result, scope) => {
+        const provider = preferenceProviderProvider(scope);
+        result[scope] = provider.getPreferences();
+        return result;
+    }, {} as PreferenceData);
+}
+
 export class PreferenceRegistryMainImpl implements PreferenceRegistryMain {
     private proxy: PreferenceRegistryExt;
     private preferenceService: PreferenceService;
+    private readonly preferenceProviderProvider: PreferenceProviderProvider;
 
     constructor(prc: RPCProtocol, container: interfaces.Container) {
         this.proxy = prc.getProxy(MAIN_RPC_CONTEXT.PREFERENCE_REGISTRY_EXT);
         this.preferenceService = container.get(PreferenceService);
+        this.preferenceProviderProvider = container.get(PreferenceProviderProvider);
         const preferenceServiceImpl = container.get(PreferenceServiceImpl);
 
         preferenceServiceImpl.onPreferenceChanged(e => {
-            this.proxy.$acceptConfigurationChanged(preferenceServiceImpl.getPreferences(), e);
+            const data = getPreferences(this.preferenceProviderProvider);
+            this.proxy.$acceptConfigurationChanged(data, {
+                preferenceName: e.preferenceName,
+                newValue: e.newValue
+            });
         });
     }
 
+    // tslint:disable-next-line:no-any
     $updateConfigurationOption(target: boolean | ConfigurationTarget | undefined, key: string, value: any): PromiseLike<void> {
         const scope = this.parseConfigurationTarget(target);
         return this.preferenceService.set(key, value, scope);
@@ -60,10 +77,13 @@ export class PreferenceRegistryMainImpl implements PreferenceRegistryMain {
             return arg ? PreferenceScope.User : PreferenceScope.Workspace;
         }
 
-        if (arg === ConfigurationTarget.User) {
-            return PreferenceScope.User;
-        } else {
-            return PreferenceScope.Workspace;
+        switch (arg) {
+            case ConfigurationTarget.Global:
+                return PreferenceScope.User;
+            case ConfigurationTarget.Workspace:
+                return PreferenceScope.Workspace;
+            default:
+                return PreferenceScope.Workspace;
         }
     }
 

@@ -16,9 +16,12 @@
 import { JsonRpcServer } from '@theia/core/lib/common/messaging/proxy-factory';
 import { RPCProtocol } from '../api/rpc-protocol';
 import { Disposable } from '@theia/core/lib/common/disposable';
-import { LogPart } from './types';
+import { LogPart, KeysToAnyValues, KeysToKeysToAnyValue } from './types';
 import { CharacterPair, CommentRule, PluginAPIFactory, Plugin } from '../api/plugin-api';
-import { PreferenceSchema } from '@theia/core/lib/browser/preferences';
+// FIXME get rid of browser code in backend
+import { PreferenceSchema, PreferenceSchemaProperties } from '@theia/core/lib/browser/preferences';
+import { ExtPluginApi } from './plugin-ext-api-contribution';
+import { IJSONSchema, IJSONSchemaSnippet } from '@theia/core/lib/common/json-schema';
 
 export const hostedServicePath = '/services/hostedPlugin';
 
@@ -52,12 +55,17 @@ export interface PluginPackage {
  * This interface describes a package.json contribution section object.
  */
 export interface PluginPackageContribution {
-    configuration: PreferenceSchema;
+    configuration?: PreferenceSchema;
+    configurationDefaults?: PreferenceSchemaProperties;
     languages?: PluginPackageLanguageContribution[];
     grammars?: PluginPackageGrammarsContribution[];
     viewsContainers?: { [location: string]: PluginPackageViewContainer[] };
     views?: { [location: string]: PluginPackageView[] };
+    commands?: PluginPackageCommand | PluginPackageCommand[];
     menus?: { [location: string]: PluginPackageMenu[] };
+    keybindings?: PluginPackageKeybinding[];
+    debuggers?: PluginPackageDebuggersContribution[];
+    snippets: PluginPackageSnippetsContribution[];
 }
 
 export interface PluginPackageViewContainer {
@@ -71,9 +79,26 @@ export interface PluginPackageView {
     name: string;
 }
 
+export interface PluginPackageCommand {
+    command: string;
+    title: string;
+    category?: string;
+    icon?: string | { light: string; dark: string; };
+}
+
 export interface PluginPackageMenu {
     command: string;
     group?: string;
+    when?: string;
+}
+
+export interface PluginPackageKeybinding {
+    key?: string;
+    command: string;
+    when?: string;
+    mac?: string;
+    linux?: string;
+    win?: string;
 }
 
 export interface PluginPackageGrammarsContribution {
@@ -87,6 +112,37 @@ export interface PluginPackageGrammarsContribution {
 
 export interface ScopeMap {
     [scopeName: string]: string;
+}
+
+export interface PluginPackageSnippetsContribution {
+    language?: string;
+    path?: string;
+}
+
+export interface PlatformSpecificAdapterContribution {
+    program?: string;
+    args?: string[];
+    runtime?: string;
+    runtimeArgs?: string[];
+}
+
+/**
+ * This interface describes a package.json debuggers contribution section object.
+ */
+export interface PluginPackageDebuggersContribution extends PlatformSpecificAdapterContribution {
+    type: string;
+    label?: string;
+    languages?: string[];
+    enableBreakpointsFor?: { languageIds: string[] };
+    configurationAttributes: { [request: string]: IJSONSchema };
+    configurationSnippets: IJSONSchemaSnippet[];
+    variables?: ScopeMap;
+    adapterExecutableCommand?: string;
+    win?: PlatformSpecificAdapterContribution;
+    winx86?: PlatformSpecificAdapterContribution;
+    windows?: PlatformSpecificAdapterContribution;
+    osx?: PlatformSpecificAdapterContribution;
+    linux?: PlatformSpecificAdapterContribution;
 }
 
 /**
@@ -114,17 +170,6 @@ export interface PluginPackageLanguageContributionConfiguration {
 }
 
 export const PluginScanner = Symbol('PluginScanner');
-export const PluginDeployer = Symbol('PluginDeployer');
-
-/**
- * A plugin resolver is handling how to resolve a plugin link into a local resource.
- */
-export const PluginDeployerResolver = Symbol('PluginDeployerResolver');
-
-export const PluginDeployerDirectoryHandler = Symbol('PluginDeployerDirectoryHandler');
-
-export const PluginDeployerFileHandler = Symbol('PluginDeployerFileHandler');
-
 /**
  * This scanner process package.json object and returns plugin metadata objects.
  */
@@ -150,6 +195,40 @@ export interface PluginScanner {
     getLifecycle(plugin: PluginPackage): PluginLifecycle;
 }
 
+export const PluginDeployer = Symbol('PluginDeployer');
+
+/**
+ * A plugin resolver is handling how to resolve a plugin link into a local resource.
+ */
+export const PluginDeployerResolver = Symbol('PluginDeployerResolver');
+/**
+ * A resolver handle a set of resource
+ */
+export interface PluginDeployerResolver {
+
+    init?(pluginDeployerResolverInit: PluginDeployerResolverInit): void;
+
+    accept(pluginSourceId: string): boolean;
+
+    resolve(pluginResolverContext: PluginDeployerResolverContext): Promise<void>;
+
+}
+
+export const PluginDeployerDirectoryHandler = Symbol('PluginDeployerDirectoryHandler');
+export interface PluginDeployerDirectoryHandler {
+    accept(pluginDeployerEntry: PluginDeployerEntry): boolean;
+
+    handle(context: PluginDeployerDirectoryHandlerContext): Promise<void>;
+}
+
+export const PluginDeployerFileHandler = Symbol('PluginDeployerFileHandler');
+export interface PluginDeployerFileHandler {
+
+    accept(pluginDeployerEntry: PluginDeployerEntry): boolean;
+
+    handle(context: PluginDeployerFileHandlerContext): Promise<void>;
+}
+
 export interface PluginDeployerResolverInit {
 
 }
@@ -165,19 +244,6 @@ export interface PluginDeployerResolverContext {
 export interface PluginDeployer {
 
     start(): void;
-
-}
-
-/**
- * A resolver handle a set of resource
- */
-export interface PluginDeployerResolver {
-
-    init?(pluginDeployerResolverInit: PluginDeployerResolverInit): void;
-
-    accept(pluginSourceId: string): boolean;
-
-    resolve(pluginResolverContext: PluginDeployerResolverContext): Promise<void>;
 
 }
 
@@ -257,19 +323,6 @@ export interface PluginDeployerDirectoryHandlerContext {
 
 }
 
-export interface PluginDeployerFileHandler {
-
-    accept(pluginDeployerEntry: PluginDeployerEntry): boolean;
-
-    handle(context: PluginDeployerFileHandlerContext): Promise<void>;
-}
-
-export interface PluginDeployerDirectoryHandler {
-    accept(pluginDeployerEntry: PluginDeployerEntry): boolean;
-
-    handle(context: PluginDeployerDirectoryHandlerContext): Promise<void>;
-}
-
 /**
  * This interface describes a plugin model object, which is populated from package.json.
  */
@@ -296,11 +349,22 @@ export interface PluginModel {
  */
 export interface PluginContribution {
     configuration?: PreferenceSchema;
+    configurationDefaults?: PreferenceSchemaProperties;
     languages?: LanguageContribution[];
     grammars?: GrammarsContribution[];
     viewsContainers?: { [location: string]: ViewContainer[] };
     views?: { [location: string]: View[] };
+    commands?: PluginCommand[]
     menus?: { [location: string]: Menu[] };
+    keybindings?: Keybinding[];
+    debuggers?: DebuggerContribution[];
+    snippets?: SnippetContribution[];
+}
+
+export interface SnippetContribution {
+    uri: string
+    source: string
+    language?: string
 }
 
 export interface GrammarsContribution {
@@ -335,6 +399,27 @@ export interface LanguageConfiguration {
     comments?: CommentRule;
     folding?: FoldingRules;
     wordPattern?: string;
+}
+
+/**
+ * This interface describes a package.json debuggers contribution section object.
+ */
+export interface DebuggerContribution extends PlatformSpecificAdapterContribution {
+    type: string,
+    label?: string,
+    languages?: string[],
+    enableBreakpointsFor?: {
+        languageIds: string[]
+    },
+    configurationAttributes?: IJSONSchema[],
+    configurationSnippets?: IJSONSchemaSnippet[],
+    variables?: ScopeMap,
+    adapterExecutableCommand?: string
+    win?: PlatformSpecificAdapterContribution;
+    winx86?: PlatformSpecificAdapterContribution;
+    windows?: PlatformSpecificAdapterContribution;
+    osx?: PlatformSpecificAdapterContribution;
+    linux?: PlatformSpecificAdapterContribution;
 }
 
 export interface IndentationRules {
@@ -379,12 +464,34 @@ export interface View {
     name: string;
 }
 
+export interface PluginCommand {
+    command: string;
+    title: string;
+    category?: string;
+    iconUrl?: IconUrl;
+}
+
+export type IconUrl = string | { light: string; dark: string; };
+
 /**
  * Menu contribution
  */
 export interface Menu {
     command: string;
     group?: string;
+    when?: string;
+}
+
+/**
+ * Keybinding contribution
+ */
+export interface Keybinding {
+    keybinding?: string;
+    command: string;
+    when?: string;
+    mac?: string;
+    linux?: string;
+    win?: string;
 }
 
 /**
@@ -458,15 +565,21 @@ export interface HostedPluginClient {
     log(logPart: LogPart): void;
 }
 
+export const PluginDeployerHandler = Symbol('PluginDeployerHandler');
+export interface PluginDeployerHandler {
+    deployFrontendPlugins(frontendPlugins: PluginDeployerEntry[]): Promise<void>;
+    deployBackendPlugins(backendPlugins: PluginDeployerEntry[]): Promise<void>;
+}
+
 export const HostedPluginServer = Symbol('HostedPluginServer');
 export interface HostedPluginServer extends JsonRpcServer<HostedPluginClient> {
     getHostedPlugin(): Promise<PluginMetadata | undefined>;
 
     getDeployedMetadata(): Promise<PluginMetadata[]>;
     getDeployedFrontendMetadata(): Promise<PluginMetadata[]>;
-    deployFrontendPlugins(frontendPlugins: PluginDeployerEntry[]): Promise<void>;
     getDeployedBackendMetadata(): Promise<PluginMetadata[]>;
-    deployBackendPlugins(backendPlugins: PluginDeployerEntry[]): Promise<void>;
+
+    getExtPluginAPI(): Promise<ExtPluginApi[]>;
 
     onMessage(message: string): Promise<void>;
 
@@ -493,7 +606,11 @@ export interface PluginServer {
     /**
      * Deploy a plugin
      */
-    deploy(pluginEntry: string): Promise<void>
+    deploy(pluginEntry: string): Promise<void>;
+
+    keyValueStorageSet(key: string, value: KeysToAnyValues, isGlobal: boolean): Promise<boolean>;
+    keyValueStorageGet(key: string, isGlobal: boolean): Promise<KeysToAnyValues>;
+    keyValueStorageGetAll(isGlobal: boolean): Promise<KeysToKeysToAnyValue>;
 }
 
 export const ServerPluginRunner = Symbol('ServerPluginRunner');
@@ -504,4 +621,9 @@ export interface ServerPluginRunner {
     onMessage(jsonMessage: any): void;
     setClient(client: HostedPluginClient): void;
     setDefault(defaultRunner: ServerPluginRunner): void;
+
+    /**
+     * Provides additional metadata.
+     */
+    getExtraPluginMetadata(): Promise<PluginMetadata[]>;
 }

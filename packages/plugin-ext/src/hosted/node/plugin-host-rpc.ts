@@ -20,6 +20,10 @@ import { PluginMetadata } from '../../common/plugin-protocol';
 import { createAPIFactory } from '../../plugin/plugin-context';
 import { EnvExtImpl } from '../../plugin/env';
 import { PreferenceRegistryExtImpl } from '../../plugin/preference-registry';
+import { ExtPluginApi } from '../../common/plugin-ext-api-contribution';
+import { DebugExtImpl } from '../../plugin/node/debug/debug';
+import { EditorsAndDocumentsExtImpl } from '../../plugin/editors-and-documents';
+import { WorkspaceExtImpl } from '../../plugin/workspace';
 
 /**
  * Handle the RPC calls.
@@ -30,16 +34,31 @@ export class PluginHostRPC {
 
     private pluginManager: PluginManagerExtImpl;
 
+    // tslint:disable-next-line:no-any
     constructor(protected readonly rpc: any) {
     }
 
     initialize() {
         const envExt = new EnvExtImpl(this.rpc);
-        const preferenceRegistryExt = new PreferenceRegistryExtImpl(this.rpc);
-        this.pluginManager = this.createPluginManager(envExt, preferenceRegistryExt);
+        const debugExt = new DebugExtImpl(this.rpc);
+        const editorsAndDocumentsExt = new EditorsAndDocumentsExtImpl(this.rpc);
+        const workspaceExt = new WorkspaceExtImpl(this.rpc, editorsAndDocumentsExt);
+        const preferenceRegistryExt = new PreferenceRegistryExtImpl(this.rpc, workspaceExt);
+        this.pluginManager = this.createPluginManager(envExt, preferenceRegistryExt, this.rpc);
         this.rpc.set(MAIN_RPC_CONTEXT.HOSTED_PLUGIN_MANAGER_EXT, this.pluginManager);
+        this.rpc.set(MAIN_RPC_CONTEXT.EDITORS_AND_DOCUMENTS_EXT, editorsAndDocumentsExt);
+        this.rpc.set(MAIN_RPC_CONTEXT.WORKSPACE_EXT, workspaceExt);
         this.rpc.set(MAIN_RPC_CONTEXT.PREFERENCE_REGISTRY_EXT, preferenceRegistryExt);
-        PluginHostRPC.apiFactory = createAPIFactory(this.rpc, this.pluginManager, envExt, preferenceRegistryExt);
+
+        PluginHostRPC.apiFactory = createAPIFactory(
+            this.rpc,
+            this.pluginManager,
+            envExt,
+            debugExt,
+            preferenceRegistryExt,
+            editorsAndDocumentsExt,
+            workspaceExt
+        );
     }
 
     // tslint:disable-next-line:no-any
@@ -53,7 +72,9 @@ export class PluginHostRPC {
         }
     }
 
-    createPluginManager(envExt: EnvExtImpl, preferencesManager: PreferenceRegistryExtImpl): PluginManagerExtImpl {
+    // tslint:disable-next-line:no-any
+    createPluginManager(envExt: EnvExtImpl, preferencesManager: PreferenceRegistryExtImpl, rpc: any): PluginManagerExtImpl {
+        const { extensionTestsPath } = process.env;
         const pluginManager = new PluginManagerExtImpl({
             loadPlugin(plugin: Plugin): void {
                 console.log('PLUGIN_HOST(' + process.pid + '): PluginManagerExtImpl/loadPlugin(' + plugin.pluginPath + ')');
@@ -100,8 +121,48 @@ export class PluginHostRPC {
                     }
                 }
                 return [result, foreign];
-            }
-        }, envExt, preferencesManager);
+            },
+            initExtApi(extApi: ExtPluginApi[]) {
+                for (const api of extApi) {
+                    if (api.backendInitPath) {
+                        try {
+                            const extApiInit = require(api.backendInitPath);
+                            extApiInit.provideApi(rpc, pluginManager);
+                        } catch (e) {
+                            console.error(e);
+                        }
+                    }
+                }
+            },
+            loadTests: extensionTestsPath ? async () => {
+                // tslint:disable:no-any
+                // Require the test runner via node require from the provided path
+                let testRunner: any;
+                let requireError: Error | undefined;
+                try {
+                    testRunner = require(extensionTestsPath);
+                } catch (error) {
+                    requireError = error;
+                }
+
+                // Execute the runner if it follows our spec
+                if (testRunner && typeof testRunner.run === 'function') {
+                    return new Promise<void>((resolve, reject) => {
+                        testRunner.run(extensionTestsPath, (error: any) => {
+                            if (error) {
+                                reject(error.toString());
+                            } else {
+                                resolve(undefined);
+                            }
+                        });
+                    });
+                }
+                throw new Error(requireError ?
+                    requireError.toString() :
+                    `Path ${extensionTestsPath} does not point to a valid extension test runner.`
+                );
+            } : undefined
+        }, envExt, preferencesManager, rpc);
         return pluginManager;
     }
 }

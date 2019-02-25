@@ -23,6 +23,7 @@ import { WorkspaceEdit, Workspace } from '@theia/languages/lib/browser';
 import { JAVA_LANGUAGE_ID } from '../common';
 import { JavaClientContribution } from './java-client-contribution';
 import { JavaKeybindingContexts } from './java-keybinding-contexts';
+import { CompileWorkspaceRequest, CompileWorkspaceStatus } from './java-protocol';
 
 /**
  * Show Java references
@@ -42,8 +43,13 @@ export const APPLY_WORKSPACE_EDIT: Command = {
  * Organize Imports
  */
 export const JAVA_ORGANIZE_IMPORTS: Command = {
-    label: 'Java: Organize Imports',
-    id: 'java.edit.organizeImports'
+    id: 'java.edit.organizeImports',
+    category: 'Java',
+    label: 'Organize Imports',
+};
+
+export const JAVA_COMPILE_WORKSPACE: Command = {
+    id: 'java.workspace.compile'
 };
 
 @injectable()
@@ -89,6 +95,17 @@ export class JavaCommandContribution implements CommandContribution, MenuContrib
             },
             isVisible: () => !!this.currentEditor,
             isEnabled: () => !!this.currentEditor
+        });
+        commands.registerCommand(JAVA_COMPILE_WORKSPACE, {
+            execute: async (fullCompile: boolean) => {
+                const languageClient = await this.javaClientContribution.languageClient;
+                const result = await languageClient.sendRequest(CompileWorkspaceRequest.type, fullCompile);
+                if (result === CompileWorkspaceStatus.SUCCEED) {
+                    return;
+                }
+                throw new Error('Failed to build');
+            },
+            isEnabled: () => this.javaClientContribution.running
         });
     }
 

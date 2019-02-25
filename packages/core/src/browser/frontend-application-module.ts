@@ -23,11 +23,12 @@ import {
     bindContributionProvider,
     SelectionService,
     ResourceProvider, ResourceResolver, DefaultResourceProvider,
-    CommandContribution, CommandRegistry, CommandService,
+    CommandContribution, CommandRegistry, CommandService, commandServicePath,
     MenuModelRegistry, MenuContribution,
     MessageService,
     MessageClient,
-    InMemoryResources
+    InMemoryResources,
+    messageServicePath
 } from '../common';
 import { KeybindingRegistry, KeybindingContext, KeybindingContribution } from './keybinding';
 import { FrontendApplication, FrontendApplicationContribution, DefaultFrontendApplicationContribution } from './frontend-application';
@@ -35,8 +36,9 @@ import { DefaultOpenerService, OpenerService, OpenHandler } from './opener-servi
 import { HttpOpenHandler } from './http-open-handler';
 import { CommonFrontendContribution } from './common-frontend-contribution';
 import {
-    QuickOpenService, QuickCommandService, QuickCommandFrontendContribution, QuickPickService, QuickOpenContribution,
-    QuickOpenHandlerRegistry, CommandQuickOpenContribution, HelpQuickOpenHandler, QuickOpenFrontendContribution, PrefixQuickOpenService
+    QuickOpenService, QuickCommandService, QuickCommandFrontendContribution, QuickOpenContribution,
+    QuickOpenHandlerRegistry, CommandQuickOpenContribution, HelpQuickOpenHandler,
+    QuickOpenFrontendContribution, PrefixQuickOpenService, QuickInputService
 } from './quick-open';
 import { LocalStorageService, StorageService } from './storage-service';
 import { WidgetFactory, WidgetManager } from './widget-manager';
@@ -49,7 +51,7 @@ import { LabelParser } from './label-parser';
 import { LabelProvider, LabelProviderContribution, DefaultUriLabelProviderContribution } from './label-provider';
 import {
     PreferenceProviderProvider, PreferenceProvider, PreferenceScope, PreferenceService,
-    PreferenceServiceImpl, bindPreferenceSchemaProvider
+    PreferenceServiceImpl, bindPreferenceSchemaProvider, PreferenceSchemaProvider
 } from './preferences';
 import { ContextMenuRenderer } from './context-menu-renderer';
 import { ThemingCommandContribution, ThemeService, BuiltinThemeProvider } from './theming';
@@ -61,6 +63,11 @@ import { AboutDialog, AboutDialogProps } from './about-dialog';
 import { EnvVariablesServer, envVariablesPath } from './../common/env-variables';
 import { FrontendApplicationStateService } from './frontend-application-state';
 import { JsonSchemaStore } from './json-schema-store';
+import { TabBarToolbarRegistry, TabBarToolbarContribution, TabBarToolbarFactory, TabBarToolbar } from './shell/tab-bar-toolbar';
+import { bindCorePreferences } from './core-preferences';
+import { QuickPickServiceImpl } from './quick-open/quick-pick-service-impl';
+import { QuickPickService, quickPickServicePath } from '../common/quick-pick-service';
+import { ContextKeyService } from './context-key-service';
 
 export const frontendApplicationModule = new ContainerModule((bind, unbind, isBound, rebind) => {
     const themeService = ThemeService.get();
@@ -78,7 +85,23 @@ export const frontendApplicationModule = new ContainerModule((bind, unbind, isBo
     bind(SidePanelHandler).toSelf();
     bind(SplitPositionHandler).toSelf().inSingletonScope();
 
-    bind(DockPanelRendererFactory).toAutoFactory(DockPanelRenderer);
+    bindContributionProvider(bind, TabBarToolbarContribution);
+    bind(TabBarToolbarRegistry).toSelf().inSingletonScope();
+    bind(FrontendApplicationContribution).toService(TabBarToolbarRegistry);
+    bind(TabBarToolbarFactory).toFactory(context => () => {
+        const { container } = context;
+        const commandRegistry = container.get(CommandRegistry);
+        const labelParser = container.get(LabelParser);
+        return new TabBarToolbar(commandRegistry, labelParser);
+    });
+
+    bind(DockPanelRendererFactory).toFactory(context => () => {
+        const { container } = context;
+        const tabBarToolbarRegistry = container.get(TabBarToolbarRegistry);
+        const tabBarRendererFactory: () => TabBarRenderer = container.get(TabBarRendererFactory);
+        const tabBarToolbarFactory: () => TabBarToolbar = container.get(TabBarToolbarFactory);
+        return new DockPanelRenderer(tabBarRendererFactory, tabBarToolbarRegistry, tabBarToolbarFactory);
+    });
     bind(DockPanelRenderer).toSelf();
     bind(TabBarRendererFactory).toFactory(context => () => {
         const contextMenuRenderer = context.container.get<ContextMenuRenderer>(ContextMenuRenderer);
@@ -87,14 +110,14 @@ export const frontendApplicationModule = new ContainerModule((bind, unbind, isBo
 
     bindContributionProvider(bind, OpenHandler);
     bind(DefaultOpenerService).toSelf().inSingletonScope();
-    bind(OpenerService).toDynamicValue(context => context.container.get(DefaultOpenerService));
+    bind(OpenerService).toService(DefaultOpenerService);
     bind(HttpOpenHandler).toSelf().inSingletonScope();
-    bind(OpenHandler).toDynamicValue(ctx => ctx.container.get(HttpOpenHandler)).inSingletonScope();
+    bind(OpenHandler).toService(HttpOpenHandler);
 
     bindContributionProvider(bind, WidgetFactory);
     bind(WidgetManager).toSelf().inSingletonScope();
     bind(ShellLayoutRestorer).toSelf().inSingletonScope();
-    bind(CommandContribution).toDynamicValue(ctx => ctx.container.get(ShellLayoutRestorer));
+    bind(CommandContribution).toService(ShellLayoutRestorer);
 
     bind(DefaultResourceProvider).toSelf().inSingletonScope();
     bind(ResourceProvider).toProvider(context =>
@@ -105,10 +128,15 @@ export const frontendApplicationModule = new ContainerModule((bind, unbind, isBo
     bind(ResourceResolver).toService(InMemoryResources);
 
     bind(SelectionService).toSelf().inSingletonScope();
-    bind(CommandRegistry).toSelf().inSingletonScope();
-    bind(CommandService).toDynamicValue(context => context.container.get(CommandRegistry));
+    bind(CommandRegistry).toSelf().inSingletonScope().onActivation(({ container }, registry) => {
+        WebSocketConnectionProvider.createProxy(container, commandServicePath, registry);
+        return registry;
+    });
+    bind(CommandService).toService(CommandRegistry);
     bindContributionProvider(bind, CommandContribution);
     bind(QuickOpenContribution).to(CommandQuickOpenContribution);
+
+    bind(ContextKeyService).toSelf().inSingletonScope();
 
     bind(MenuModelRegistry).toSelf().inSingletonScope();
     bindContributionProvider(bind, MenuContribution);
@@ -118,20 +146,29 @@ export const frontendApplicationModule = new ContainerModule((bind, unbind, isBo
     bindContributionProvider(bind, KeybindingContribution);
 
     bind(MessageClient).toSelf().inSingletonScope();
-    bind(MessageService).toSelf().inSingletonScope();
+    bind(MessageService).toSelf().inSingletonScope().onActivation(({ container }, messages) => {
+        const client = container.get(MessageClient);
+        WebSocketConnectionProvider.createProxy(container, messageServicePath, client);
+        return messages;
+    });
 
     bind(CommonFrontendContribution).toSelf().inSingletonScope();
-    [CommandContribution, KeybindingContribution, MenuContribution].forEach(serviceIdentifier =>
-        bind(serviceIdentifier).toDynamicValue(ctx => ctx.container.get(CommonFrontendContribution)).inSingletonScope()
+    [FrontendApplicationContribution, CommandContribution, KeybindingContribution, MenuContribution].forEach(serviceIdentifier =>
+        bind(serviceIdentifier).toService(CommonFrontendContribution)
     );
 
     bind(QuickOpenService).toSelf().inSingletonScope();
-    bind(QuickPickService).toSelf().inSingletonScope();
+    bind(QuickInputService).toSelf().inSingletonScope();
     bind(QuickCommandService).toSelf().inSingletonScope();
     bind(QuickCommandFrontendContribution).toSelf().inSingletonScope();
-    [CommandContribution, KeybindingContribution].forEach(serviceIdentifier =>
-        bind(serviceIdentifier).toDynamicValue(ctx => ctx.container.get(QuickCommandFrontendContribution)).inSingletonScope()
+    [CommandContribution, KeybindingContribution, MenuContribution].forEach(serviceIdentifier =>
+        bind(serviceIdentifier).toService(QuickCommandFrontendContribution)
     );
+
+    bind(QuickPickService).to(QuickPickServiceImpl).inSingletonScope().onActivation(({ container }, quickPickService) => {
+        WebSocketConnectionProvider.createProxy(container, quickPickServicePath, quickPickService);
+        return quickPickService;
+    });
 
     bind(PrefixQuickOpenService).toSelf().inSingletonScope();
     bindContributionProvider(bind, QuickOpenContribution);
@@ -146,7 +183,7 @@ export const frontendApplicationModule = new ContainerModule((bind, unbind, isBo
     bind(StorageService).toService(LocalStorageService);
 
     bind(StatusBarImpl).toSelf().inSingletonScope();
-    bind(StatusBar).toDynamicValue(ctx => ctx.container.get(StatusBarImpl)).inSingletonScope();
+    bind(StatusBar).toService(StatusBarImpl);
     bind(LabelParser).toSelf().inSingletonScope();
 
     bindContributionProvider(bind, LabelProviderContribution);
@@ -156,7 +193,13 @@ export const frontendApplicationModule = new ContainerModule((bind, unbind, isBo
 
     bind(PreferenceProvider).toSelf().inSingletonScope().whenTargetNamed(PreferenceScope.User);
     bind(PreferenceProvider).toSelf().inSingletonScope().whenTargetNamed(PreferenceScope.Workspace);
-    bind(PreferenceProviderProvider).toFactory(ctx => (scope: PreferenceScope) => ctx.container.getNamed(PreferenceProvider, scope));
+    bind(PreferenceProvider).toSelf().inSingletonScope().whenTargetNamed(PreferenceScope.Folder);
+    bind(PreferenceProviderProvider).toFactory(ctx => (scope: PreferenceScope) => {
+        if (scope === PreferenceScope.Default) {
+            return ctx.container.get(PreferenceSchemaProvider);
+        }
+        return ctx.container.getNamed(PreferenceProvider, scope);
+    });
     bind(PreferenceServiceImpl).toSelf().inSingletonScope();
     bind(PreferenceService).toService(PreferenceServiceImpl);
     bind(FrontendApplicationContribution).toService(PreferenceServiceImpl);
@@ -174,10 +217,10 @@ export const frontendApplicationModule = new ContainerModule((bind, unbind, isBo
         };
     });
     bind(FrontendConnectionStatusService).toSelf().inSingletonScope();
-    bind(ConnectionStatusService).toDynamicValue(ctx => ctx.container.get(FrontendConnectionStatusService)).inSingletonScope();
-    bind(FrontendApplicationContribution).toDynamicValue(ctx => ctx.container.get(FrontendConnectionStatusService)).inSingletonScope();
+    bind(ConnectionStatusService).toService(FrontendConnectionStatusService);
+    bind(FrontendApplicationContribution).toService(FrontendConnectionStatusService);
     bind(ApplicationConnectionStatusContribution).toSelf().inSingletonScope();
-    bind(FrontendApplicationContribution).toDynamicValue(ctx => ctx.container.get(ApplicationConnectionStatusContribution)).inSingletonScope();
+    bind(FrontendApplicationContribution).toService(ApplicationConnectionStatusContribution);
 
     bind(ApplicationServer).toDynamicValue(ctx => {
         const provider = ctx.container.get(WebSocketConnectionProvider);
@@ -198,4 +241,6 @@ export const frontendApplicationModule = new ContainerModule((bind, unbind, isBo
     [CommandContribution, MenuContribution].forEach(serviceIdentifier =>
         bind(serviceIdentifier).toService(ThemingCommandContribution),
     );
+
+    bindCorePreferences(bind);
 });

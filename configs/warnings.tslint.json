@@ -1,15 +1,12 @@
 {
   "rules": {
+    "deprecation": true,
     "await-promise": {
       "severity": "warning",
       "options": [
-        true,
-        "Thenable"
+        "Thenable",
+        "PromiseLike"
       ]
-    },
-    "no-any": {
-      "severity": "warning",
-      "options": true
     },
     "no-implicit-dependencies": {
       "severity": "warning",
@@ -45,8 +42,13 @@
       ]
     },
     "no-return-await": {
+      "severity": "warning"
+    },
+    "no-void-expression": {
       "severity": "warning",
-      "options": true
+      "options": [
+        "ignore-arrow-function-shorthand"
+      ]
     }
   }
 }

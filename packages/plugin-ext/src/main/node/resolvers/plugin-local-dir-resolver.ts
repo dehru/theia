@@ -14,6 +14,8 @@
  * SPDX-License-Identifier: EPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0
  ********************************************************************************/
 
+// tslint:disable:no-any
+
 import { PluginDeployerResolver, PluginDeployerResolverContext } from '../../../common/plugin-protocol';
 import { injectable } from 'inversify';
 import * as fs from 'fs';
@@ -33,11 +35,15 @@ export class LocalDirectoryPluginDeployerResolver implements PluginDeployerResol
             return;
         }
         // remove prefix
-        const dirPath = localDirSetting.substring('local-dir'.length + 1);
+        let dirPath = localDirSetting.substring('local-dir'.length + 1);
+        if (!path.isAbsolute(dirPath)) {
+            dirPath = path.resolve(process.cwd(), dirPath);
+        }
 
         // check directory exists
         if (!fs.existsSync(dirPath)) {
-            throw new Error('The directory referenced by ' + pluginResolverContext.getOriginId() + ' does not exist.');
+            console.warn(`The directory referenced by ${pluginResolverContext.getOriginId()} does not exist.`);
+            return;
 
         }
         // list all stuff from this directory

@@ -25,26 +25,23 @@ import { JavaCommandContribution } from './java-commands';
 import { JavaLabelProviderContribution } from './java-label-provider';
 import { JavaResourceResolver } from './java-resource';
 import { JavaEditorTextFocusContext } from './java-keybinding-contexts';
-import { JavaTextmateContribution } from './monaco-contribution/java-textmate-contribution';
-import { LanguageGrammarDefinitionContribution } from '@theia/monaco/lib/browser/textmate/textmate-contribution';
-
-import './monaco-contribution';
+import { bindJavaPreferences } from './java-preferences';
 
 export default new ContainerModule(bind => {
+    bindJavaPreferences(bind);
+
     bind(JavaCommandContribution).toSelf().inSingletonScope();
-    bind(CommandContribution).toDynamicValue(ctx => ctx.container.get(JavaCommandContribution)).inSingletonScope();
-    bind(KeybindingContribution).toDynamicValue(ctx => ctx.container.get(JavaCommandContribution)).inSingletonScope();
-    bind(MenuContribution).toDynamicValue(ctx => ctx.container.get(JavaCommandContribution)).inSingletonScope();
+    bind(CommandContribution).toService(JavaCommandContribution);
+    bind(KeybindingContribution).toService(JavaCommandContribution);
+    bind(MenuContribution).toService(JavaCommandContribution);
 
     bind(JavaClientContribution).toSelf().inSingletonScope();
-    bind(LanguageClientContribution).toDynamicValue(ctx => ctx.container.get(JavaClientContribution));
+    bind(LanguageClientContribution).toService(JavaClientContribution);
 
     bind(KeybindingContext).to(JavaEditorTextFocusContext).inSingletonScope();
 
     bind(JavaResourceResolver).toSelf().inSingletonScope();
-    bind(ResourceResolver).toDynamicValue(ctx => ctx.container.get(JavaResourceResolver));
+    bind(ResourceResolver).toService(JavaResourceResolver);
 
     bind(LabelProviderContribution).to(JavaLabelProviderContribution).inSingletonScope();
-
-    bind(LanguageGrammarDefinitionContribution).to(JavaTextmateContribution).inSingletonScope();
 });

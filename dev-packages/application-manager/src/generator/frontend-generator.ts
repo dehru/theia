@@ -15,6 +15,7 @@
  ********************************************************************************/
 
 import { AbstractGenerator } from './abstract-generator';
+import { existsSync, readFileSync } from 'fs';
 
 export class FrontendGenerator extends AbstractGenerator {
 
@@ -27,6 +28,20 @@ export class FrontendGenerator extends AbstractGenerator {
         }
     }
 
+    protected compileIndexPreload(frontendModules: Map<string, string>): string {
+        const template = this.pck.props.generator.config.preloadTemplate;
+        if (!template) {
+            return '';
+        }
+
+        // Support path to html file
+        if (existsSync(template)) {
+            return readFileSync(template).toString();
+        }
+
+        return template;
+    }
+
     protected compileIndexHtml(frontendModules: Map<string, string>): string {
         return `<!DOCTYPE html>
 <html>
@@ -36,7 +51,7 @@ export class FrontendGenerator extends AbstractGenerator {
 </head>
 
 <body>
-  <div class="theia-preload"></div>
+  <div class="theia-preload">${this.compileIndexPreload(frontendModules)}</div>
 </body>
 
 </html>`;
@@ -92,6 +107,12 @@ module.exports = Promise.resolve()${this.compileFrontendModuleImports(frontendMo
     protected compileElectronMain(): string {
         return `// @ts-check
 
+// Useful for Electron/NW.js apps as GUI apps on macOS doesn't inherit the \`$PATH\` define
+// in your dotfiles (.bashrc/.bash_profile/.zshrc/etc).
+// https://github.com/electron/electron/issues/550#issuecomment-162037357
+// https://github.com/theia-ide/theia/pull/3534#issuecomment-439689082
+require('fix-path')();
+
 // Workaround for https://github.com/electron/electron/issues/9225. Chrome has an issue where
 // in certain locales (e.g. PL), image metrics are wrongly computed. We explicitly set the
 // LC_NUMERIC to prevent this from happening (selects the numeric formatting category of the
@@ -101,59 +122,119 @@ if (process.env.LC_ALL) {
 }
 process.env.LC_NUMERIC = 'C';
 
-const { join } = require('path');
+const electron = require('electron');
+const { join, resolve } = require('path');
 const { isMaster } = require('cluster');
 const { fork } = require('child_process');
-const { app, BrowserWindow, ipcMain } = require('electron');
+const Storage = require('electron-store');
+const electronStore = new Storage();
+const { app, shell, BrowserWindow, ipcMain, Menu } = electron;
 
-const windows = [];
-
-function createNewWindow(theUrl) {
-    const newWindow = new BrowserWindow({ width: 1024, height: 728, show: !!theUrl });
-    if (windows.length === 0) {
-        newWindow.webContents.on('new-window', (event, url, frameName, disposition, options) => {
-            // If the first electron window isn't visible, then all other new windows will remain invisible.
-            // https://github.com/electron/electron/issues/3751
-            options.show = true;
-            options.width = 1024;
-            options.height = 728;
-        });
-    }
-    windows.push(newWindow);
-    if (!!theUrl) {
-        newWindow.loadURL(theUrl);
-    } else {
-        newWindow.on('ready-to-show', () => newWindow.show());
-    }
-    newWindow.on('closed', () => {
-        const index = windows.indexOf(newWindow);
-        if (index !== -1) {
-            windows.splice(index, 1);
-        }
-        if (windows.length === 0) {
-            app.exit(0);
-        }
-    });
-    return newWindow;
-}
+const applicationName = \`${this.pck.props.frontend.config.applicationName}\`;
 
 if (isMaster) {
-    app.on('window-all-closed', () => {
-        if (process.platform !== 'darwin') {
-            app.quit();
-        }
-    });
-    ipcMain.on('create-new-window', (event, url) => {
-        createNewWindow(url);
-    });
     app.on('ready', () => {
+        const { screen } = electron;
+
+        // Remove the default electron menus, waiting for the application to set its own.
+        Menu.setApplicationMenu(Menu.buildFromTemplate([{
+            role: 'help', submenu: [{ role: 'toggledevtools'}]
+        }]));
+
+        function createNewWindow(theUrl) {
+
+            // We must center by hand because \`browserWindow.center()\` fails on multi-screen setups
+            // See: https://github.com/electron/electron/issues/3490
+            const { bounds } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+            const height = Math.floor(bounds.height * (2/3));
+            const width = Math.floor(bounds.width * (2/3));
+
+            const y = Math.floor(bounds.y + (bounds.height - height) / 2);
+            const x = Math.floor(bounds.x + (bounds.width - width) / 2);
+
+            const windowStateName = 'windowstate';
+            const windowState = electronStore.get(windowStateName, {
+                width, height, x, y
+            });
+
+            let windowOptions = {
+                show: false,
+                title: applicationName,
+                width: windowState.width,
+                height: windowState.height,
+                x: windowState.x,
+                y: windowState.y
+            };
+            if (windowState.isMaximized) {
+                windowOptions.isMaximized = true;
+            }
+
+            // Always hide the window, we will show the window when it is ready to be shown in any case.
+            const newWindow = new BrowserWindow(windowOptions);
+            windowOptions.isMaximized && newWindow.maximize();
+            newWindow.on('ready-to-show', () => newWindow.show());
+
+            // Prevent calls to "window.open" from opening an ElectronBrowser window,
+            // and rather open in the OS default web browser.
+            newWindow.webContents.on('new-window', (event, url) => {
+                event.preventDefault();
+                shell.openExternal(url);
+            });
+
+            const saveState = () => {
+                const bounds = newWindow.getBounds();
+                electronStore.set(windowStateName, {
+                    isMaximized: newWindow.isMaximized(),
+                    width: bounds.width,
+                    height: bounds.height,
+                    x: bounds.x,
+                    y: bounds.y
+                })
+            }
+            newWindow.on('close', saveState);
+            newWindow.on('resize', saveState);
+            newWindow.on('move', saveState);
+
+            if (!!theUrl) {
+                newWindow.loadURL(theUrl);
+            }
+            return newWindow;
+        }
+
+        app.on('window-all-closed', () => {
+            app.quit();
+        });
+        ipcMain.on('create-new-window', (event, url) => {
+            createNewWindow(url);
+        });
+        ipcMain.on('open-external', (event, url) => {
+            shell.openExternal(url);
+        });
+
         // Check whether we are in bundled application or development mode.
         // @ts-ignore
         const devMode = process.defaultApp || /node_modules[\/]electron[\/]/.test(process.execPath);
         const mainWindow = createNewWindow();
         const loadMainWindow = (port) => {
-            mainWindow.loadURL('file://' + join(__dirname, '../../lib/index.html') + '?port=' + port);
+            if (!mainWindow.isDestroyed()) {
+                mainWindow.loadURL('file://' + join(__dirname, '../../lib/index.html') + '?port=' + port);
+            }
         };
+
+        // We cannot use the \`process.cwd()\` as the application project path (the location of the \`package.json\` in other words)
+        // in a bundled electron application because it depends on the way we start it. For instance, on OS X, these are a differences:
+        // https://github.com/theia-ide/theia/issues/3297#issuecomment-439172274
+        process.env.THEIA_APP_PROJECT_PATH = resolve(__dirname, '..', '..');
+
+        // Set the electron version for both the dev and the production mode. (https://github.com/theia-ide/theia/issues/3254)
+        // Otherwise, the forked backend processes will not know that they're serving the electron frontend.
+        const { versions } = process;
+        // @ts-ignore
+        if (versions && typeof versions.electron !== 'undefined') {
+            // @ts-ignore
+            process.env.THEIA_ELECTRON_VERSION = versions.electron;
+        }
+
         const mainPath = join(__dirname, '..', 'backend', 'main');
         // We need to distinguish between bundled application and development mode when starting the clusters.
         // See: https://github.com/electron/electron/issues/6337#issuecomment-230183287
@@ -165,12 +246,6 @@ if (isMaster) {
                 app.exit(1);
             });
         } else {
-            const { versions } = process;
-            // @ts-ignore
-            if (versions && typeof versions.electron !== 'undefined') {
-                // @ts-ignore
-                process.env.THEIA_ELECTRON_VERSION = versions.electron;
-            }
             const cp = fork(mainPath, [], { env: Object.assign({}, process.env) });
             cp.on('message', (message) => {
                 loadMainWindow(message);

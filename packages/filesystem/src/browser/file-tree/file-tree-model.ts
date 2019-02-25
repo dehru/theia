@@ -148,6 +148,13 @@ export class FileTreeModel extends TreeModelImpl implements LocationService {
             return false;
         }
         const targetUri = node.uri.resolve(uri.path.base);
+        /* Check if the folder is copied on itself */
+        const sourcePath = uri.path.toString();
+        const targetPath = node.uri.path.toString();
+        if (sourcePath === targetPath) {
+            return false;
+        }
+
         this.fileSystem.copy(uri.toString(), targetUri.toString());
         return true;
     }
@@ -212,6 +219,7 @@ export class FileTreeModel extends TreeModelImpl implements LocationService {
      *  Read all entries within a folder by block of 100 files or folders until the
      *  whole folder has been read.
      */
+    // tslint:disable-next-line:no-any
     protected readEntries(entry: WebKitDirectoryEntry, cb: (items: any) => void): void {
         const reader = entry.createReader();
         const getEntries = () => {
@@ -232,6 +240,7 @@ export class FileTreeModel extends TreeModelImpl implements LocationService {
     }
 
     protected uploadFileEntry(base: URI, entry: WebKitFileEntry): void {
+        // tslint:disable-next-line:no-any
         entry.file(file => this.uploadFile(base, file as any));
     }
 

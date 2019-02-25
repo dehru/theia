@@ -19,11 +19,11 @@ import {
     PrefixQuickOpenService, QuickOpenModel, QuickOpenItem, OpenerService,
     QuickOpenMode, KeybindingContribution, KeybindingRegistry, QuickOpenHandler, QuickOpenOptions, QuickOpenContribution, QuickOpenHandlerRegistry
 } from '@theia/core/lib/browser';
-import { Languages, WorkspaceSymbolParams, SymbolInformation } from './language-client-services';
+import { Languages, WorkspaceSymbolParams, SymbolInformation, WorkspaceSymbolProvider, CancellationToken } from './language-client-services';
 import { CancellationTokenSource, CommandRegistry, CommandHandler, Command, SelectionService } from '@theia/core';
 import URI from '@theia/core/lib/common/uri';
 import { CommandContribution } from '@theia/core/lib/common';
-import { Range } from 'vscode-languageserver-types';
+import { Range, Position } from 'vscode-languageserver-types';
 
 @injectable()
 export class WorkspaceSymbolCommand implements QuickOpenModel, CommandContribution, KeybindingContribution, CommandHandler, QuickOpenHandler, QuickOpenContribution {
@@ -92,38 +92,62 @@ export class WorkspaceSymbolCommand implements QuickOpenModel, CommandContributi
 
             const items: QuickOpenItem[] = [];
 
+            const workspaceProviderPromises = [];
             for (const provider of this.languages.workspaceSymbolProviders) {
-                provider.provideWorkspaceSymbols(param, newCancellationSource.token).then(symbols => {
+                workspaceProviderPromises.push(provider.provideWorkspaceSymbols(param, newCancellationSource.token).then(symbols => {
                     if (symbols && !newCancellationSource.token.isCancellationRequested) {
                         for (const symbol of symbols) {
-                            items.push(this.createItem(symbol));
-                        }
-                        if (items.length === 0) {
-                            items.push(new QuickOpenItem({
-                                label: lookFor.length === 0 ? 'Type to search for symbols' : 'No symbols matching',
-                                run: () => false
-                            }));
+                            items.push(this.createItem(symbol, provider, newCancellationSource.token));
                         }
                         acceptor(items);
                     }
-                });
+                    return symbols;
+                }));
             }
+            Promise.all(workspaceProviderPromises.map(p => p.then(sym => sym, _ => undefined))).then(symbols => {
+                const filteredSymbols = symbols.filter(el => el !== undefined && el.length !== 0);
+                if (filteredSymbols.length === 0) {
+                    items.push(new QuickOpenItem({
+                        label: lookFor.length === 0 ? 'Type to search for symbols' : 'No symbols matching',
+                        run: () => false
+                    }));
+                    acceptor(items);
+                }
+            }).catch();
         }
     }
 
-    protected createItem(sym: SymbolInformation): QuickOpenItem {
+    protected createItem(sym: SymbolInformation, provider: WorkspaceSymbolProvider, token: CancellationToken): QuickOpenItem {
         const uri = new URI(sym.location.uri);
-        const icon = SymbolKind[sym.kind].toLowerCase();
+        const kind = SymbolKind[sym.kind];
+        const icon = (kind) ? SymbolKind[sym.kind].toLowerCase() : 'unknown';
         let parent = sym.containerName;
         if (parent) {
             parent += ' - ';
         }
         parent = (parent || '') + uri.displayName;
         return new SimpleOpenItem(sym.name, icon, parent, uri.toString(), () => {
-            this.openerService.getOpener(uri).then(opener => opener.open(uri, {
-                selection: Range.create(sym.location.range.start, sym.location.range.start)
-            }));
+
+            if (provider.resolveWorkspaceSymbol) {
+                provider.resolveWorkspaceSymbol(sym, token).then(resolvedSymbol => {
+                    if (resolvedSymbol) {
+                        this.openURL(uri, resolvedSymbol.location.range.start, resolvedSymbol.location.range.end);
+                    } else {
+                        // the symbol didn't resolve -> use given symbol
+                        this.openURL(uri, sym.location.range.start, sym.location.range.end);
+                    }
+                });
+            } else {
+                // resolveWorkspaceSymbol wasn't specified
+                this.openURL(uri, sym.location.range.start, sym.location.range.end);
+            }
         });
+    }
+
+    private openURL(uri: URI, start: Position, end: Position): void {
+        this.openerService.getOpener(uri).then(opener => opener.open(uri, {
+            selection: Range.create(start, end)
+        }));
     }
 }
 
@@ -191,5 +215,13 @@ enum SymbolKind {
     String = 15,
     Number = 16,
     Boolean = 17,
-    Array = 18
+    Array = 18,
+    Object = 19,
+    Key = 20,
+    Null = 21,
+    EnumMember = 22,
+    Struct = 23,
+    Event = 24,
+    Operator = 25,
+    TypeParameter = 26
 }

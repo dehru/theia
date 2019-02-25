@@ -33,7 +33,7 @@ export class FileSystemNodeOptions {
     encoding: string;
     recursive: boolean;
     overwrite: boolean;
-    moveToTrash: true;
+    moveToTrash: boolean;
 
     public static DEFAULT: FileSystemNodeOptions = {
         encoding: 'utf8',
@@ -259,7 +259,10 @@ export class FileSystemNode implements FileSystem {
         const _uri = new URI(uri);
         const stat = await this.doGetStat(_uri, 0);
         if (stat) {
-            throw FileSystemError.FileExists(uri, 'Error occurred while creating the directory.');
+            if (stat.isDirectory) {
+                return stat;
+            }
+            throw FileSystemError.FileExists(uri, 'Error occurred while creating the directory: path is a file.');
         }
         await fs.mkdirs(FileUri.fsPath(_uri));
         const newStat = await this.doGetStat(_uri, 1);
@@ -376,6 +379,14 @@ export class FileSystemNode implements FileSystem {
             return true;
         } catch {
             return false;
+        }
+    }
+
+    async getFsPath(uri: string): Promise<string | undefined> {
+        if (!uri.startsWith('file:/')) {
+            return undefined;
+        } else {
+            return FileUri.fsPath(uri);
         }
     }
 

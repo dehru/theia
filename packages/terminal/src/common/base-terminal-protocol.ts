@@ -21,6 +21,7 @@ export interface IBaseTerminalServerOptions { }
 
 export interface IBaseTerminalServer extends JsonRpcServer<IBaseTerminalClient> {
     create(IBaseTerminalServerOptions: object): Promise<number>;
+    getProcessId(id: number): Promise<number>;
     resize(id: number, cols: number, rows: number): Promise<void>;
     attach(id: number): Promise<number>;
     close(id: number): Promise<void>;
@@ -33,7 +34,9 @@ export namespace IBaseTerminalServer {
 
 export interface IBaseTerminalExitEvent {
     terminalId: number;
-    code: number;
+
+    // Exactly one of code and signal will be set.
+    code?: number;
     signal?: string;
 }
 

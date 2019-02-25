@@ -14,7 +14,7 @@
  * SPDX-License-Identifier: EPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0
  ********************************************************************************/
 
-import { injectable, inject, optional } from 'inversify';
+import { injectable, inject, optional, postConstruct } from 'inversify';
 import { ArrayExt, find, toArray } from '@phosphor/algorithm';
 import { Signal } from '@phosphor/signaling';
 import {
@@ -23,13 +23,16 @@ import {
 } from '@phosphor/widgets';
 import { Message } from '@phosphor/messaging';
 import { IDragEvent } from '@phosphor/dragdrop';
-import { RecursivePartial, MaybePromise } from '../../common';
+import { RecursivePartial, MaybePromise, Event as CommonEvent } from '../../common';
 import { Saveable } from '../saveable';
 import { StatusBarImpl, StatusBarEntry, StatusBarAlignment } from '../status-bar/status-bar';
-import { SidePanelHandler, SidePanel, SidePanelHandlerFactory, TheiaDockPanel } from './side-panel-handler';
-import { TabBarRendererFactory, TabBarRenderer, SHELL_TABBAR_CONTEXT_MENU, ScrollableTabBar } from './tab-bars';
+import { TheiaDockPanel } from './theia-dock-panel';
+import { SidePanelHandler, SidePanel, SidePanelHandlerFactory } from './side-panel-handler';
+import { TabBarRendererFactory, TabBarRenderer, SHELL_TABBAR_CONTEXT_MENU, ScrollableTabBar, ToolbarAwareTabBar } from './tab-bars';
 import { SplitPositionHandler, SplitPositionOptions } from './split-panels';
 import { FrontendApplicationStateService } from '../frontend-application-state';
+import { TabBarToolbarRegistry, TabBarToolbarFactory, TabBarToolbar } from './tab-bar-toolbar';
+import { ContextKeyService } from '../context-key-service';
 
 /** The class name added to ApplicationShell instances. */
 const APPLICATION_SHELL_CLASS = 'theia-ApplicationShell';
@@ -46,6 +49,9 @@ const LAYOUT_DATA_VERSION = '2.0';
 
 export const ApplicationShellOptions = Symbol('ApplicationShellOptions');
 export const DockPanelRendererFactory = Symbol('DockPanelRendererFactory');
+export interface DockPanelRendererFactory {
+    (): DockPanelRenderer
+}
 
 /**
  * A renderer for dock panels that supports context menus on tabs.
@@ -56,12 +62,14 @@ export class DockPanelRenderer implements DockLayout.IRenderer {
     readonly tabBarClasses: string[] = [];
 
     constructor(
-        @inject(TabBarRendererFactory) protected readonly tabBarRendererFactory: () => TabBarRenderer
+        @inject(TabBarRendererFactory) protected readonly tabBarRendererFactory: () => TabBarRenderer,
+        @inject(TabBarToolbarRegistry) protected readonly tabBarToolbarRegistry: TabBarToolbarRegistry,
+        @inject(TabBarToolbarFactory) protected readonly tabBarToolbarFactory: () => TabBarToolbar
     ) { }
 
     createTabBar(): TabBar<Widget> {
         const renderer = this.tabBarRendererFactory();
-        const tabBar = new ScrollableTabBar({
+        const tabBar = new ToolbarAwareTabBar(this.tabBarToolbarRegistry, this.tabBarToolbarFactory, {
             renderer,
             // Scroll bar options
             handlers: ['drag-thumb', 'keyboard', 'wheel', 'touch'],
@@ -80,7 +88,7 @@ export class DockPanelRenderer implements DockLayout.IRenderer {
         return DockPanel.defaultRenderer.createHandle();
     }
 
-    protected onCurrentTabChanged(sender: ScrollableTabBar, { currentIndex }: TabBar.ICurrentChangedArgs<Widget>): void {
+    protected onCurrentTabChanged(sender: ToolbarAwareTabBar, { currentIndex }: TabBar.ICurrentChangedArgs<Widget>): void {
         if (currentIndex >= 0) {
             sender.revealTab(currentIndex);
         }
@@ -109,13 +117,13 @@ export class ApplicationShell extends Widget {
     /**
      * The dock panel in the main shell area. This is where editors usually go to.
      */
-    readonly mainPanel: DockPanel;
+    readonly mainPanel: TheiaDockPanel;
 
     /**
      * The dock panel in the bottom shell area. In contrast to the main panel, the bottom panel
      * can be collapsed and expanded.
      */
-    readonly bottomPanel: DockPanel;
+    readonly bottomPanel: TheiaDockPanel;
 
     /**
      * Handler for the left side panel. The primary application views go here, such as the
@@ -150,6 +158,9 @@ export class ApplicationShell extends Widget {
 
     private readonly tracker = new FocusTracker<Widget>();
     private dragState?: WidgetDragState;
+
+    @inject(ContextKeyService)
+    protected readonly contextKeyService: ContextKeyService;
 
     /**
      * Construct a new application shell.
@@ -193,6 +204,39 @@ export class ApplicationShell extends Widget {
 
         this.tracker.currentChanged.connect(this.onCurrentChanged, this);
         this.tracker.activeChanged.connect(this.onActiveChanged, this);
+    }
+
+    @postConstruct()
+    protected init(): void {
+        this.initSidebarVisibleKeyContext();
+        this.initFocusKeyContexts();
+    }
+
+    protected initSidebarVisibleKeyContext(): void {
+        const leftSideBarPanel = this.leftPanelHandler.dockPanel;
+        const sidebarVisibleKey = this.contextKeyService.createKey('sidebarVisible', leftSideBarPanel.isVisible);
+        const onAfterShow = leftSideBarPanel['onAfterShow'].bind(leftSideBarPanel);
+        leftSideBarPanel['onAfterShow'] = (msg: Message) => {
+            onAfterShow(msg);
+            sidebarVisibleKey.set(true);
+        };
+        const onAfterHide = leftSideBarPanel['onAfterHide'].bind(leftSideBarPanel);
+        leftSideBarPanel['onAfterHide'] = (msg: Message) => {
+            onAfterHide(msg);
+            sidebarVisibleKey.set(false);
+        };
+    }
+
+    protected initFocusKeyContexts(): void {
+        const sideBarFocus = this.contextKeyService.createKey('sideBarFocus', false);
+        const panelFocus = this.contextKeyService.createKey('panelFocus', false);
+        const updateFocusContextKeys = () => {
+            const area = this.activeWidget && this.getAreaFor(this.activeWidget);
+            sideBarFocus.set(area === 'left');
+            panelFocus.set(area === 'main');
+        };
+        updateFocusContextKeys();
+        this.activeChanged.connect(updateFocusContextKeys);
     }
 
     protected onBeforeAttach(msg: Message): void {
@@ -354,7 +398,7 @@ export class ApplicationShell extends Widget {
     /**
      * Create the dock panel in the main shell area.
      */
-    protected createMainPanel(): DockPanel {
+    protected createMainPanel(): TheiaDockPanel {
         const renderer = this.dockPanelRendererFactory();
         renderer.tabBarClasses.push(MAIN_BOTTOM_AREA_CLASS);
         renderer.tabBarClasses.push(MAIN_AREA_CLASS);
@@ -370,7 +414,7 @@ export class ApplicationShell extends Widget {
     /**
      * Create the dock panel in the bottom shell area.
      */
-    protected createBottomPanel(): DockPanel {
+    protected createBottomPanel(): TheiaDockPanel {
         const renderer = this.dockPanelRendererFactory();
         renderer.tabBarClasses.push(MAIN_BOTTOM_AREA_CLASS);
         renderer.tabBarClasses.push(BOTTOM_AREA_CLASS);
@@ -626,31 +670,56 @@ export class ApplicationShell extends Widget {
      *
      * Widgets added to the top area are not tracked regarding the _current_ and _active_ states.
      */
-    addWidget(widget: Widget, options: ApplicationShell.WidgetOptions) {
+    addWidget(widget: Widget, options: Readonly<ApplicationShell.WidgetOptions> = {}) {
         if (!widget.id) {
             console.error('Widgets added to the application shell must have a unique id property.');
             return;
         }
-        switch (options.area) {
+        let ref: Widget | undefined = options.ref;
+        let area: ApplicationShell.Area = options.area || 'main';
+        if (!ref && (area === 'main' || area === 'bottom')) {
+            const tabBar = this.getTabBarFor(area);
+            ref = tabBar && tabBar.currentTitle && tabBar.currentTitle.owner || undefined;
+        }
+        // make sure that ref belongs to area
+        area = ref && this.getAreaFor(ref) || area;
+        const addOptions: DockPanel.IAddOptions = {};
+        if (ApplicationShell.isOpenToSideMode(options.mode)) {
+            const areaPanel = area === 'main' ? this.mainPanel : area === 'bottom' ? this.bottomPanel : undefined;
+            const sideRef = areaPanel && ref && (options.mode === 'open-to-left' ?
+                areaPanel.previousTabBarWidget(ref) :
+                areaPanel.nextTabBarWidget(ref));
+            if (sideRef) {
+                addOptions.ref = sideRef;
+            } else {
+                addOptions.ref = ref;
+                addOptions.mode = options.mode === 'open-to-left' ? 'split-left' : 'split-right';
+            }
+        } else {
+            addOptions.ref = ref;
+            addOptions.mode = options.mode;
+        }
+        const sidePanelOptions: SidePanel.WidgetOptions = { rank: options.rank };
+        switch (area) {
             case 'main':
-                this.mainPanel.addWidget(widget, options);
+                this.mainPanel.addWidget(widget, addOptions);
                 break;
             case 'top':
                 this.topPanel.addWidget(widget);
                 break;
             case 'bottom':
-                this.bottomPanel.addWidget(widget, options);
+                this.bottomPanel.addWidget(widget, addOptions);
                 break;
             case 'left':
-                this.leftPanelHandler.addWidget(widget, options);
+                this.leftPanelHandler.addWidget(widget, sidePanelOptions);
                 break;
             case 'right':
-                this.rightPanelHandler.addWidget(widget, options);
+                this.rightPanelHandler.addWidget(widget, sidePanelOptions);
                 break;
             default:
-                throw new Error('Illegal argument: ' + options.area);
+                throw new Error('Unexpected area: ' + options.area);
         }
-        if (options.area !== 'top') {
+        if (area !== 'top') {
             this.track(widget);
         }
     }
@@ -743,6 +812,10 @@ export class ApplicationShell extends Widget {
                     tabBar.revealTab(index);
                 }
             }
+            const panel = this.getAreaPanelFor(newValue);
+            if (panel instanceof TheiaDockPanel) {
+                panel.markAsCurrent(newValue.title);
+            }
             // Set the z-index so elements with `position: fixed` contained in the active widget are displayed correctly
             this.setZIndex(newValue.node, '1');
         }
@@ -770,6 +843,9 @@ export class ApplicationShell extends Widget {
             for (const toTrack of await widget.getTrackableWidgets()) {
                 this.tracker.add(toTrack);
                 Saveable.apply(toTrack);
+            }
+            if (widget.onDidChangeTrackableWidgets) {
+                widget.onDidChangeTrackableWidgets(widgets => widgets.forEach(w => this.track(w)));
             }
         }
     }
@@ -1058,11 +1134,11 @@ export class ApplicationShell extends Widget {
      */
     getAreaFor(widget: Widget): ApplicationShell.Area | undefined {
         const title = widget.title;
-        const mainPanelTabBar = find(this.mainPanel.tabBars(), bar => ArrayExt.firstIndexOf(bar.titles, title) > -1);
+        const mainPanelTabBar = this.mainPanel.findTabBar(title);
         if (mainPanelTabBar) {
             return 'main';
         }
-        const bottomPanelTabBar = find(this.bottomPanel.tabBars(), bar => ArrayExt.firstIndexOf(bar.titles, title) > -1);
+        const bottomPanelTabBar = this.bottomPanel.findTabBar(title);
         if (bottomPanelTabBar) {
             return 'bottom';
         }
@@ -1072,6 +1148,26 @@ export class ApplicationShell extends Widget {
         if (ArrayExt.firstIndexOf(this.rightPanelHandler.tabBar.titles, title) > -1) {
             return 'right';
         }
+        return undefined;
+    }
+
+    protected getAreaPanelFor(widget: Widget): DockPanel | undefined {
+        const title = widget.title;
+        const mainPanelTabBar = this.mainPanel.findTabBar(title);
+        if (mainPanelTabBar) {
+            return this.mainPanel;
+        }
+        const bottomPanelTabBar = this.bottomPanel.findTabBar(title);
+        if (bottomPanelTabBar) {
+            return this.bottomPanel;
+        }
+        if (ArrayExt.firstIndexOf(this.leftPanelHandler.tabBar.titles, title) > -1) {
+            return this.leftPanelHandler.dockPanel;
+        }
+        if (ArrayExt.firstIndexOf(this.rightPanelHandler.tabBar.titles, title) > -1) {
+            return this.rightPanelHandler.dockPanel;
+        }
+        return undefined;
     }
 
     /**
@@ -1091,9 +1187,9 @@ export class ApplicationShell extends Widget {
         if (typeof widgetOrArea === 'string') {
             switch (widgetOrArea) {
                 case 'main':
-                    return this.mainPanel.tabBars().next();
+                    return this.mainPanel.currentTabBar;
                 case 'bottom':
-                    return this.bottomPanel.tabBars().next();
+                    return this.bottomPanel.currentTabBar;
                 case 'left':
                     return this.leftPanelHandler.tabBar;
                 case 'right':
@@ -1103,11 +1199,11 @@ export class ApplicationShell extends Widget {
             }
         } else if (widgetOrArea && widgetOrArea.isAttached) {
             const widgetTitle = widgetOrArea.title;
-            const mainPanelTabBar = find(this.mainPanel.tabBars(), bar => ArrayExt.firstIndexOf(bar.titles, widgetTitle) > -1);
+            const mainPanelTabBar = this.mainPanel.findTabBar(widgetTitle);
             if (mainPanelTabBar) {
                 return mainPanelTabBar;
             }
-            const bottomPanelTabBar = find(this.bottomPanel.tabBars(), bar => ArrayExt.firstIndexOf(bar.titles, widgetTitle) > -1);
+            const bottomPanelTabBar = this.bottomPanel.findTabBar(widgetTitle);
             if (bottomPanelTabBar) {
                 return bottomPanelTabBar;
             }
@@ -1323,13 +1419,34 @@ export namespace ApplicationShell {
     });
 
     /**
+     * Whether a widget should be opened to the side tab bar relatively to the reference widget.
+     */
+    export type OpenToSideMode = 'open-to-left' | 'open-to-right';
+    // tslint:disable-next-line:no-any
+    export function isOpenToSideMode(mode: OpenToSideMode | any): mode is OpenToSideMode {
+        return mode === 'open-to-left' || mode === 'open-to-right';
+    }
+
+    /**
      * Options for adding a widget to the application shell.
      */
-    export interface WidgetOptions extends DockLayout.IAddOptions, SidePanel.WidgetOptions {
+    export interface WidgetOptions extends SidePanel.WidgetOptions {
         /**
          * The area of the application shell where the widget will reside.
          */
-        area: Area;
+        area?: Area;
+        /**
+         * The insertion mode for adding the widget.
+         *
+         * The default is `'tab-after'`.
+         */
+        mode?: DockLayout.InsertMode | OpenToSideMode
+        /**
+         * The reference widget for the insert location.
+         *
+         * The default is `undefined`.
+         */
+        ref?: Widget;
     }
 
     /**
@@ -1358,6 +1475,7 @@ export namespace ApplicationShell {
      */
     export interface TrackableWidgetProvider {
         getTrackableWidgets(): MaybePromise<Widget[]>
+        readonly onDidChangeTrackableWidgets?: CommonEvent<Widget[]>
     }
 
     export namespace TrackableWidgetProvider {

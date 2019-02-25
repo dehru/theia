@@ -83,7 +83,16 @@ module.exports = {
             },
             {
                 test: /\\.useable\\.css$/,
-                loader: 'style-loader/useable!css-loader'
+                use: [
+                  {
+                    loader: 'style-loader/useable',
+                    options: {
+                      singleton: true,
+                      attrs: { id: 'theia-theme' },
+                    }
+                  },
+                  'css-loader'
+                ]
             },
             {
                 test: /\\.(ttf|eot|svg)(\\?v=\\d+\\.\\d+\\.\\d+)?$/,
@@ -93,7 +102,7 @@ module.exports = {
                 test: /\\.(jpg|png|gif)$/,
                 loader: 'file-loader',
                 options: {
-                    name: '[path][name].[hash].[ext]',
+                    name: '[hash].[ext]',
                 }
             },
             {

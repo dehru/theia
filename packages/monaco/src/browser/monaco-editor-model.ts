@@ -39,6 +39,7 @@ export class MonacoEditorModel implements ITextEditorModel, TextEditorDocument {
 
     autoSave: 'on' | 'off' = 'on';
     autoSaveDelay: number = 500;
+    readonly onWillSaveLoopTimeOut = 1500;
 
     protected model: monaco.editor.IModel;
     protected readonly resolveModel: Promise<void>;
@@ -308,7 +309,7 @@ export class MonacoEditorModel implements ITextEditorModel, TextEditorDocument {
     }
 
     protected async doSave(reason: TextDocumentSaveReason, token: CancellationToken): Promise<void> {
-        if (token.isCancellationRequested || !this.resource.saveContents || !this.dirty) {
+        if (token.isCancellationRequested || !this.resource.saveContents) {
             return;
         }
 
@@ -332,23 +333,78 @@ export class MonacoEditorModel implements ITextEditorModel, TextEditorDocument {
         this.fireDidSaveModel();
     }
 
-    protected fireWillSaveModel(reason: TextDocumentSaveReason, token: CancellationToken): Promise<void> {
-        const model = this;
-        return new Promise<void>(resolve => {
-            this.onWillSaveModelEmitter.fire({
-                model, reason,
-                waitUntil: thenable =>
-                    thenable.then(operations => {
-                        if (token.isCancellationRequested) {
-                            resolve();
-                        }
-                        this.applyEdits(operations, {
-                            ignoreDirty: true
-                        });
-                        resolve();
-                    })
-            });
+    protected async fireWillSaveModel(reason: TextDocumentSaveReason, token: CancellationToken): Promise<void> {
+        type EditContributor = Thenable<monaco.editor.IIdentifiedSingleEditOperation[]>;
+
+        let didTimeout = false;
+        let timeoutHandle: number = -1;
+
+        const shouldStop: () => boolean = () => token.isCancellationRequested || didTimeout;
+
+        // tslint:disable-next-line:no-any
+        const timeoutPromise = new Promise((resolve, reject) => timeoutHandle = <any>setTimeout(() => {
+            didTimeout = true;
+            reject(new Error('onWillSave listener loop timeout'));
+        }, this.onWillSaveLoopTimeOut));
+
+        const firing = this.onWillSaveModelEmitter.sequence(async listener => {
+            if (shouldStop()) {
+                return false;
+            }
+            const waitables: EditContributor[] = [];
+            const { version } = this;
+
+            const event = {
+                model: this, reason,
+                waitUntil: (thenable: EditContributor) => {
+                    if (Object.isFrozen(waitables)) {
+                        throw new Error('waitUntil cannot be called asynchronously.');
+                    }
+                    waitables.push(thenable);
+                }
+            };
+
+            // Fire.
+            try {
+                listener(event);
+            } catch (err) {
+                console.error(err);
+                return true;
+            }
+
+            // Asynchronous calls to `waitUntil` should fail.
+            Object.freeze(waitables);
+
+            // Wait for all promises.
+            const edits = await Promise.all(waitables).then(allOperations =>
+                ([] as monaco.editor.IIdentifiedSingleEditOperation[]).concat(...allOperations)
+            );
+            if (shouldStop()) {
+                return false;
+            }
+
+            // In a perfect world, we should only apply edits if document is clean.
+            if (version !== this.version) {
+                console.error('onWillSave listeners should provide edits, not directly alter the document.');
+            }
+
+            // Finally apply edits provided by this listener before firing the next.
+            if (edits && edits.length > 0) {
+                this.applyEdits(edits, {
+                    ignoreDirty: true,
+                });
+            }
+
+            return true;
         });
+
+        try {
+            await Promise.race([timeoutPromise, firing]);
+        } catch (e) {
+            console.error(e);
+        } finally {
+            clearTimeout(timeoutHandle);
+        }
     }
 
     protected fireDidSaveModel(): void {

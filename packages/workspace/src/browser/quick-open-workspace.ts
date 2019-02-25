@@ -16,7 +16,8 @@
 
 import { injectable, inject } from 'inversify';
 import { QuickOpenService, QuickOpenModel, QuickOpenItem, QuickOpenGroupItem, QuickOpenMode, LabelProvider } from '@theia/core/lib/browser';
-import { WorkspaceService, getTemporaryWorkspaceFileUri } from './workspace-service';
+import { WorkspaceService } from './workspace-service';
+import { getTemporaryWorkspaceFileUri } from '../common';
 import { WorkspacePreferences } from './workspace-preferences';
 import URI from '@theia/core/lib/common/uri';
 import { FileSystem, FileSystemUtils } from '@theia/filesystem/lib/common';
@@ -43,6 +44,12 @@ export class QuickOpenWorkspace implements QuickOpenModel {
             tempWorkspaceFile = getTemporaryWorkspaceFileUri(new URI(home));
         }
         await this.preferences.ready;
+        if (!workspaces.length) {
+            this.items.push(new QuickOpenGroupItem({
+                label: 'No Recent Workspaces',
+                run: (mode: QuickOpenMode): boolean => false
+            }));
+        }
         for (const workspace of workspaces) {
             const uri = new URI(workspace);
             const stat = await this.fileSystem.getFileStat(workspace);

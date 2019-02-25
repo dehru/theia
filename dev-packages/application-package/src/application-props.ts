@@ -57,6 +57,10 @@ export interface ApplicationProps extends NpmRegistryProps {
      */
     readonly backend: Readonly<{ config: BackendApplicationConfig }>;
 
+    /**
+     * Generator specific properties.
+     */
+    readonly generator: Readonly<{ config: GeneratorConfig }>;
 }
 export namespace ApplicationProps {
 
@@ -69,7 +73,14 @@ export namespace ApplicationProps {
             config: {}
         },
         frontend: {
-            config: {}
+            config: {
+                applicationName: 'Theia'
+            }
+        },
+        generator: {
+            config: {
+                preloadTemplate: ''
+            }
         }
     };
 
@@ -93,6 +104,11 @@ export interface FrontendApplicationConfig extends ApplicationConfig {
      */
     readonly defaultTheme?: string;
 
+    /**
+     * The name of the application. `Theia` by default.
+     */
+    readonly applicationName: string;
+
 }
 
 /**
@@ -106,5 +122,17 @@ export interface BackendApplicationConfig extends ApplicationConfig {
      * For more details, see [`startupTimeoutOption`](MasterProcess#startupTimeoutOption).
      */
     readonly startupTimeout?: number;
+
+}
+
+/**
+ * Configuration for the generator.
+ */
+export interface GeneratorConfig {
+
+    /**
+     * Template to use for extra preload content markup (file path or HTML)
+     */
+    readonly preloadTemplate: string;
 
 }

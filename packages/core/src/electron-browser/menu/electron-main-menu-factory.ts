@@ -21,12 +21,16 @@ import {
     MAIN_MENU_BAR, MenuModelRegistry, MenuPath
 } from '../../common';
 import { PreferenceService, KeybindingRegistry, Keybinding, KeyCode, Key } from '../../browser';
+import { ContextKeyService } from '../../browser/context-key-service';
 
 @injectable()
 export class ElectronMainMenuFactory {
 
     protected _menu: Electron.Menu;
     protected _toggledCommands: Set<string> = new Set();
+
+    @inject(ContextKeyService)
+    protected readonly contextKeyService: ContextKeyService;
 
     constructor(
         @inject(CommandRegistry) protected readonly commandRegistry: CommandRegistry,
@@ -63,28 +67,52 @@ export class ElectronMainMenuFactory {
     protected fillMenuTemplate(items: Electron.MenuItemConstructorOptions[], menuModel: CompositeMenuNode): Electron.MenuItemConstructorOptions[] {
         for (const menu of menuModel.children) {
             if (menu instanceof CompositeMenuNode) {
-                if (menu.label) {
-                    // should we create a submenu?
-                    items.push({
-                        label: menu.label,
-                        submenu: this.fillMenuTemplate([], menu)
-                    });
-                } else if (menu.children.length > 0) {
-                    // do not put a separator above the first group
-                    if (items.length > 0) {
-                        // or just a separator?
+                if (menu.children.length > 0) {
+                    // do not render empty nodes
+
+                    if (menu.isSubmenu) { // submenu node
+
+                        const submenu = this.fillMenuTemplate([], menu);
+                        if (submenu.length === 0) {
+                            continue;
+                        }
+
                         items.push({
-                            type: 'separator'
+                            label: menu.label,
+                            submenu
                         });
+
+                    } else { // group node
+
+                        // process children
+                        const submenu = this.fillMenuTemplate([], menu);
+                        if (submenu.length === 0) {
+                            continue;
+                        }
+
+                        if (items.length > 0) {
+                            // do not put a separator above the first group
+
+                            items.push({
+                                type: 'separator'
+                            });
+                        }
+
+                        // render children
+                        items.push(...submenu);
                     }
-                    // followed by the elements
-                    this.fillMenuTemplate(items, menu);
                 }
             } else if (menu instanceof ActionMenuNode) {
                 const commandId = menu.action.commandId;
+
                 // That is only a sanity check at application startup.
                 if (!this.commandRegistry.getCommand(commandId)) {
                     throw new Error(`Unknown command with ID: ${commandId}.`);
+                }
+
+                if (!this.commandRegistry.isVisible(commandId)
+                    || (!!menu.action.when && !this.contextKeyService.match(menu.action.when))) {
+                    continue;
                 }
 
                 const bindings = this.keybindingRegistry.getKeybindingsForCommand(commandId);

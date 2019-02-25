@@ -14,9 +14,10 @@
  * SPDX-License-Identifier: EPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0
  ********************************************************************************/
 
-import { injectable, inject } from 'inversify';
+import { injectable, inject, postConstruct } from 'inversify';
 import { MAIN_MENU_BAR, MenuContribution, MenuModelRegistry } from '../common/menu';
 import { KeybindingContribution, KeybindingRegistry } from './keybinding';
+import { FrontendApplicationContribution } from './frontend-application';
 import { CommandContribution, CommandRegistry, Command } from '../common/command';
 import { UriAwareCommandHandler } from '../common/uri-command-handler';
 import { SelectionService } from '../common/selection-service';
@@ -27,6 +28,8 @@ import { SHELL_TABBAR_CONTEXT_MENU } from './shell/tab-bars';
 import { AboutDialog } from './about-dialog';
 import * as browser from './browser';
 import URI from '../common/uri';
+import { ContextKeyService } from './context-key-service';
+import { OS } from '../common/os';
 
 export namespace CommonMenus {
 
@@ -46,19 +49,25 @@ export namespace CommonMenus {
     export const EDIT_CLIPBOARD = [...EDIT, '2_clipboard'];
     export const EDIT_FIND = [...EDIT, '3_find'];
 
-    export const VIEW = [...MAIN_MENU_BAR, '3_view'];
+    export const VIEW = [...MAIN_MENU_BAR, '4_view'];
+    export const VIEW_PRIMARY = [...VIEW, '0_primary'];
     export const VIEW_VIEWS = [...VIEW, '1_views'];
     export const VIEW_LAYOUT = [...VIEW, '2_layout'];
 
-    export const HELP = [...MAIN_MENU_BAR, '4_help'];
+    // last menu item
+    export const HELP = [...MAIN_MENU_BAR, '9_help'];
 
 }
 
 export namespace CommonCommands {
 
+    const FILE_CATEGORY = 'File';
+    const VIEW_CATEGORY = 'View';
+
     export const OPEN: Command = {
         id: 'core.open',
-        label: 'Open'
+        category: FILE_CATEGORY,
+        label: 'Open',
     };
 
     export const CUT: Command = {
@@ -94,53 +103,65 @@ export namespace CommonCommands {
 
     export const NEXT_TAB: Command = {
         id: 'core.nextTab',
+        category: VIEW_CATEGORY,
         label: 'Switch to Next Tab'
     };
     export const PREVIOUS_TAB: Command = {
         id: 'core.previousTab',
+        category: VIEW_CATEGORY,
         label: 'Switch to Previous Tab'
     };
     export const CLOSE_TAB: Command = {
         id: 'core.close.tab',
+        category: VIEW_CATEGORY,
         label: 'Close Tab'
     };
     export const CLOSE_OTHER_TABS: Command = {
         id: 'core.close.other.tabs',
+        category: VIEW_CATEGORY,
         label: 'Close Other Tabs'
     };
     export const CLOSE_RIGHT_TABS: Command = {
         id: 'core.close.right.tabs',
+        category: VIEW_CATEGORY,
         label: 'Close Tabs to the Right'
     };
     export const CLOSE_ALL_TABS: Command = {
         id: 'core.close.all.tabs',
+        category: VIEW_CATEGORY,
         label: 'Close All Tabs'
     };
     export const COLLAPSE_PANEL: Command = {
         id: 'core.collapse.tab',
+        category: VIEW_CATEGORY,
         label: 'Collapse Side Panel'
     };
     export const COLLAPSE_ALL_PANELS: Command = {
         id: 'core.collapse.all.tabs',
+        category: VIEW_CATEGORY,
         label: 'Collapse All Side Panels'
     };
     export const TOGGLE_BOTTOM_PANEL: Command = {
         id: 'core.toggle.bottom.panel',
+        category: VIEW_CATEGORY,
         label: 'Toggle Bottom Panel'
     };
 
     export const SAVE: Command = {
         id: 'core.save',
-        label: 'Save'
+        category: FILE_CATEGORY,
+        label: 'Save',
     };
     export const SAVE_ALL: Command = {
         id: 'core.saveAll',
-        label: 'Save All'
+        category: FILE_CATEGORY,
+        label: 'Save All',
     };
 
     export const AUTO_SAVE: Command = {
         id: 'textEditor.commands.autosave',
-        label: 'Auto Save'
+        category: FILE_CATEGORY,
+        label: 'Auto Save',
     };
 
     export const QUIT: Command = {
@@ -155,7 +176,8 @@ export namespace CommonCommands {
 
     export const OPEN_PREFERENCES: Command = {
         id: 'preferences:open',
-        label: 'Open Preferences'
+        category: 'Settings',
+        label: 'Open Preferences',
     };
 
 }
@@ -168,7 +190,7 @@ export const supportCopy = browser.isNative || document.queryCommandSupported('c
 export const supportPaste = browser.isNative || (!browser.isChrome && document.queryCommandSupported('paste'));
 
 @injectable()
-export class CommonFrontendContribution implements MenuContribution, CommandContribution, KeybindingContribution {
+export class CommonFrontendContribution implements FrontendApplicationContribution, MenuContribution, CommandContribution, KeybindingContribution {
 
     constructor(
         @inject(ApplicationShell) protected readonly shell: ApplicationShell,
@@ -177,6 +199,16 @@ export class CommonFrontendContribution implements MenuContribution, CommandCont
         @inject(OpenerService) protected readonly openerService: OpenerService,
         @inject(AboutDialog) protected readonly aboutDialog: AboutDialog
     ) { }
+
+    @inject(ContextKeyService)
+    protected readonly contextKeyService: ContextKeyService;
+
+    @postConstruct()
+    protected init(): void {
+        this.contextKeyService.createKey<boolean>('isLinux', OS.type() === OS.Type.Linux);
+        this.contextKeyService.createKey<boolean>('isMac', OS.type() === OS.Type.OSX);
+        this.contextKeyService.createKey<boolean>('isWindows', OS.type() === OS.Type.Windows);
+    }
 
     registerMenus(registry: MenuModelRegistry): void {
         registry.registerSubmenu(CommonMenus.FILE, 'File');
@@ -270,9 +302,9 @@ export class CommonFrontendContribution implements MenuContribution, CommandCont
     }
 
     registerCommands(commandRegistry: CommandRegistry): void {
-        commandRegistry.registerCommand(CommonCommands.OPEN, new UriAwareCommandHandler<URI>(this.selectionService, {
-            execute: uri => open(this.openerService, uri)
-        }));
+        commandRegistry.registerCommand(CommonCommands.OPEN, new UriAwareCommandHandler<URI[]>(this.selectionService, {
+            execute: uris => uris.map(uri => open(this.openerService, uri)),
+        }, { multi: true }));
         commandRegistry.registerCommand(CommonCommands.CUT, {
             execute: () => {
                 if (supportCut) {
@@ -418,6 +450,7 @@ export class CommonFrontendContribution implements MenuContribution, CommandCont
             });
         }
         registry.registerKeybindings(
+            // Edition
             {
                 command: CommonCommands.UNDO.id,
                 keybinding: 'ctrlcmd+z'
@@ -434,13 +467,22 @@ export class CommonFrontendContribution implements MenuContribution, CommandCont
                 command: CommonCommands.REPLACE.id,
                 keybinding: 'ctrlcmd+alt+f'
             },
+            // Tabs
             {
                 command: CommonCommands.NEXT_TAB.id,
                 keybinding: 'ctrlcmd+tab'
             },
             {
+                command: CommonCommands.NEXT_TAB.id,
+                keybinding: 'ctrlcmd+alt+d'
+            },
+            {
                 command: CommonCommands.PREVIOUS_TAB.id,
                 keybinding: 'ctrlcmd+shift+tab'
+            },
+            {
+                command: CommonCommands.PREVIOUS_TAB.id,
+                keybinding: 'ctrlcmd+alt+a'
             },
             {
                 command: CommonCommands.CLOSE_TAB.id,
@@ -454,6 +496,7 @@ export class CommonFrontendContribution implements MenuContribution, CommandCont
                 command: CommonCommands.CLOSE_ALL_TABS.id,
                 keybinding: 'alt+shift+w'
             },
+            // Panels
             {
                 command: CommonCommands.COLLAPSE_PANEL.id,
                 keybinding: 'alt+c'
@@ -466,6 +509,7 @@ export class CommonFrontendContribution implements MenuContribution, CommandCont
                 command: CommonCommands.COLLAPSE_ALL_PANELS.id,
                 keybinding: 'alt+shift+c',
             },
+            // Saving
             {
                 command: CommonCommands.SAVE.id,
                 keybinding: 'ctrlcmd+s'
@@ -479,5 +523,14 @@ export class CommonFrontendContribution implements MenuContribution, CommandCont
 
     protected async openAbout() {
         this.aboutDialog.open();
+    }
+
+    onWillStop() {
+        if (this.shell.canSaveAll()) {
+            setTimeout(() => {
+                this.messageService.info('Some documents should be saved, data will be lost otherwise.');
+            });
+            return true;
+        }
     }
 }

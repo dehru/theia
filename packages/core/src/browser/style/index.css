@@ -111,7 +111,6 @@ body {
 
 button, .theia-button {
     border: none;
-    border-radius: 0;
     color: var(--theia-ui-button-font-color);
     background-color: var(--theia-ui-button-color);
     min-width: 65px;
@@ -147,6 +146,11 @@ button[disabled], .theia-button[disabled] {
   cursor: default;
 }
 
+button.secondary[disabled], .theia-button.secondary[disabled] {
+    color: var(--theia-ui-button-font-color-secondary-disabled);
+    background-color: var(--theia-ui-button-color-secondary-disabled);
+}
+
 .p-Widget select {
     color: var(--theia-ui-font-color1);
     font-size: var(--theia-ui-font-size1);
@@ -154,6 +158,10 @@ button[disabled], .theia-button[disabled] {
     border: 1px solid var(--theia-border-color1);
     background: var(--theia-layout-color2);
     outline: none;
+}
+
+textarea {
+  font-family: var(--theia-ui-font-family);
 }
 
 /*-----------------------------------------------------------------------------
@@ -174,3 +182,5 @@ button[disabled], .theia-button[disabled] {
 @import './search-box.css';
 @import './ansi.css';
 @import './view-container.css';
+@import './notification.css';
+@import './alert-messages.css';

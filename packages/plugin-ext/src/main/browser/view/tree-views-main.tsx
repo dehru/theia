@@ -19,7 +19,6 @@ import { MAIN_RPC_CONTEXT, TreeViewsMain, TreeViewsExt } from '../../../api/plug
 import { RPCProtocol } from '@theia/plugin-ext/src/api/rpc-protocol';
 import { ViewRegistry } from './view-registry';
 import { Message } from '@phosphor/messaging';
-
 import {
     TreeWidget,
     ContextMenuRenderer,
@@ -32,13 +31,18 @@ import {
     ExpandableTreeNode,
     CompositeTreeNode,
     TreeImpl,
-    Tree
+    Tree,
+    TREE_NODE_SEGMENT_CLASS,
+    TREE_NODE_SEGMENT_GROW_CLASS
 } from '@theia/core/lib/browser';
-
 import { TreeViewItem, TreeViewItemCollapsibleState } from '../../../api/plugin-api';
-
+import { MenuPath } from '@theia/core/lib/common/menu';
 import * as ReactDOM from 'react-dom';
 import * as React from 'react';
+import { ContextKeyService, ContextKey } from '@theia/core/lib/browser/context-key-service';
+
+export const TREE_NODE_HYPERLINK = 'theia-TreeNodeHyperlink';
+export const VIEW_ITEM_CONTEXT_MENU: MenuPath = ['view-item-context-menu'];
 
 export class TreeViewsMainImpl implements TreeViewsMain {
 
@@ -54,9 +58,16 @@ export class TreeViewsMainImpl implements TreeViewsMain {
 
     private viewRegistry: ViewRegistry;
 
+    protected viewCtxKey: ContextKey<string>;
+    protected viewItemCtxKey: ContextKey<string>;
+
     constructor(rpc: RPCProtocol, private container: interfaces.Container) {
         this.proxy = rpc.getProxy(MAIN_RPC_CONTEXT.TREE_VIEWS_EXT);
         this.viewRegistry = container.get(ViewRegistry);
+
+        const contextKeyService = this.container.get<ContextKeyService>(ContextKeyService);
+        this.viewCtxKey = contextKeyService.createKey('view', '');
+        this.viewItemCtxKey = contextKeyService.createKey('viewItem', '');
     }
 
     $registerTreeDataProvider(treeViewId: string): void {
@@ -68,7 +79,7 @@ export class TreeViewsMainImpl implements TreeViewsMain {
 
         this.treeViewWidgets.set(treeViewId, treeViewWidget);
 
-        this.viewRegistry.onRegisterTreeView(treeViewId, treeViewWidget);
+        this.viewRegistry.registerTreeView(treeViewId, treeViewWidget);
 
         this.handleTreeEvents(treeViewId, treeViewWidget);
     }
@@ -92,7 +103,9 @@ export class TreeViewsMainImpl implements TreeViewsMain {
     }
 
     createTreeViewContainer(dataProvider: TreeViewDataProviderMain): Container {
-        const child = createTreeContainer(this.container);
+        const child = createTreeContainer(this.container, {
+            contextMenuPath: VIEW_ITEM_CONTEXT_MENU
+        });
 
         child.bind(TreeViewDataProviderMain).toConstantValue(dataProvider);
 
@@ -113,8 +126,15 @@ export class TreeViewsMainImpl implements TreeViewsMain {
 
         treeViewWidget.model.onSelectionChanged(event => {
             if (event.length === 1) {
-                this.proxy.$setSelection(treeViewId, event[0].id);
+                const treeItemId = event[0].id;
+                const [, contextValue = ''] = treeItemId.split('/');
+
+                this.proxy.$setSelection(treeViewId, treeItemId);
+                this.viewItemCtxKey.set(contextValue);
+            } else {
+                this.viewItemCtxKey.set('');
             }
+            this.viewCtxKey.set(treeViewId);
         });
     }
 
@@ -237,6 +257,55 @@ export class TreeViewWidget extends TreeWidget {
         }
 
         return undefined;
+    }
+
+    protected renderCaption(node: TreeNode, props: NodeProps): React.ReactNode {
+        const classes = [TREE_NODE_SEGMENT_CLASS];
+        if (!this.hasTrailingSuffixes(node)) {
+            classes.push(TREE_NODE_SEGMENT_GROW_CLASS);
+        }
+        const className = classes.join(' ');
+        let attrs = this.decorateCaption(node, {
+            className, id: node.id
+        });
+
+        if (node.description) {
+            attrs = {
+                ...attrs,
+                title: node.description
+            };
+        }
+
+        const children = this.getCaption(node);
+        return React.createElement('div', attrs, ...children);
+    }
+
+    getCaption(node: TreeNode): React.ReactNode[] {
+        const nodes: React.ReactNode[] = [];
+
+        let work = node.name;
+
+        const regex = /\[([^\[]+)\]\(([^\)]+)\)/g;
+        const matchResult = node.name.match(regex);
+
+        if (matchResult) {
+            matchResult.forEach(match => {
+                const part = work.substring(0, work.indexOf(match));
+                nodes.push(part);
+
+                const execResult = regex.exec(node.name);
+                const link = <a href={execResult![2]}
+                    target='_blank'
+                    className={TREE_NODE_HYPERLINK}
+                    onClick={e => e.stopPropagation()}>{execResult![1]}</a >;
+                nodes.push(link);
+
+                work = work.substring(work.indexOf(match) + match.length);
+            });
+        }
+
+        nodes.push(work);
+        return nodes;
     }
 
 }

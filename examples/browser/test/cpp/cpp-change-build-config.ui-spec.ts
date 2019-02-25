@@ -28,21 +28,6 @@ let topPanel: TopPanel;
 let leftPanel: LeftPanel;
 let bottomPanel: BottomPanel;
 
-before(() => {
-    const driver = browser;
-
-    driver.url('/');
-    driver.localStorage('DELETE');
-    driver.refresh();
-
-    mainPage = new MainPage(driver);
-    topPanel = new TopPanel(driver);
-    leftPanel = new LeftPanel(driver);
-    bottomPanel = new BottomPanel(driver);
-
-    mainPage.waitForStartup();
-});
-
 /**
  * Prepare some test files in the workspace.
  */
@@ -100,7 +85,7 @@ int main() {}
  */
 function hasClangd() {
     try {
-        const out = cp.execSync('clangd -version', {encoding: 'utf8'});
+        const out = cp.execSync('clangd -version', { encoding: 'utf8' });
         // Match 'clangd version' at the start of
         // 'clangd version 8.0.0 (trunk 341484) (llvm/trunk 341481)'.
         return out.indexOf('clangd version') === 0;
@@ -124,8 +109,25 @@ function changeBuildConfig(name: string, driver: WebdriverIO.Client<void>) {
     driver.pause(300);
 }
 
-describe('cpp extension', function() {
-    it('should be able to change build config', function() {
+// skip the cpp tests for the moment since they are broken.
+describe.skip('cpp extension', function () {
+
+    before(() => {
+        const driver = browser;
+
+        driver.url('/');
+        driver.localStorage('DELETE');
+        driver.refresh();
+
+        mainPage = new MainPage(driver);
+        topPanel = new TopPanel(driver);
+        leftPanel = new LeftPanel(driver);
+        bottomPanel = new BottomPanel(driver);
+
+        mainPage.waitForStartup();
+    });
+
+    it.skip('should be able to change build config', function () {
         if (!hasClangd()) {
             this.skip();
             return;

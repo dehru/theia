@@ -17,22 +17,25 @@
 // tslint:disable:no-any
 
 import * as React from 'react';
-import { WebSocketConnectionProvider, LabelProvider } from '@theia/core/lib/browser';
+import { LabelProvider } from '@theia/core/lib/browser';
 import { DebugProtocol } from 'vscode-debugprotocol';
-import { Emitter, Event, DisposableCollection, Disposable, MessageClient, MessageType } from '@theia/core/lib/common';
+import { Emitter, Event, DisposableCollection, Disposable, MessageClient, MessageType, Mutable } from '@theia/core/lib/common';
 import { TerminalService } from '@theia/terminal/lib/browser/base/terminal-service';
 import { EditorManager } from '@theia/editor/lib/browser';
 import { CompositeTreeElement } from '@theia/core/lib/browser/source-tree';
-import { DebugConfiguration } from '../common/debug-configuration';
 import { DebugSessionConnection, DebugRequestTypes, DebugEventTypes } from './debug-session-connection';
-import { DebugThread, StoppedDetails } from './model/debug-thread';
+import { DebugThread, StoppedDetails, DebugThreadData } from './model/debug-thread';
 import { DebugScope } from './console/debug-console-items';
 import { DebugStackFrame } from './model/debug-stack-frame';
 import { DebugSource } from './model/debug-source';
-import { DebugBreakpoint } from './model/debug-breakpoint';
+import { DebugBreakpoint, DebugBreakpointData } from './model/debug-breakpoint';
 import debounce = require('p-debounce');
 import URI from '@theia/core/lib/common/uri';
 import { BreakpointManager } from './breakpoint/breakpoint-manager';
+import { DebugSessionOptions, InternalDebugSessionOptions } from './debug-session-options';
+import { DebugConfiguration } from '../common/debug-common';
+import { SourceBreakpoint } from './breakpoint/breakpoint-marker';
+import { FileSystem } from '@theia/filesystem/lib/common';
 
 export enum DebugState {
     Inactive,
@@ -43,8 +46,6 @@ export enum DebugState {
 
 // FIXME: make injectable to allow easily inject services
 export class DebugSession implements CompositeTreeElement {
-
-    protected readonly connection: DebugSessionConnection;
 
     protected readonly onDidChangeEmitter = new Emitter<void>();
     readonly onDidChange: Event<void> = this.onDidChangeEmitter.event;
@@ -62,15 +63,14 @@ export class DebugSession implements CompositeTreeElement {
 
     constructor(
         readonly id: string,
-        readonly configuration: DebugConfiguration,
-        connectionProvider: WebSocketConnectionProvider,
+        readonly options: DebugSessionOptions,
+        protected readonly connection: DebugSessionConnection,
         protected readonly terminalServer: TerminalService,
         protected readonly editorManager: EditorManager,
         protected readonly breakpoints: BreakpointManager,
         protected readonly labelProvider: LabelProvider,
-        protected readonly messages: MessageClient
-    ) {
-        this.connection = new DebugSessionConnection(id, connectionProvider);
+        protected readonly messages: MessageClient,
+        protected readonly fileSystem: FileSystem) {
         this.connection.onRequest('runInTerminal', (request: DebugProtocol.RunInTerminalRequest) => this.runInTerminal(request));
         this.toDispose.pushAll([
             this.onDidChangeEmitter,
@@ -100,6 +100,7 @@ export class DebugSession implements CompositeTreeElement {
                     this.clearThread(threadId);
                 }
             }),
+            this.on('terminated', () => this.terminated = true),
             this.on('capabilities', event => this.updateCapabilities(event.body.capabilities)),
             this.breakpoints.onDidChangeMarkers(uri => this.updateBreakpoints({ uri, sourceModified: true }))
         ]);
@@ -107,6 +108,10 @@ export class DebugSession implements CompositeTreeElement {
 
     dispose(): void {
         this.toDispose.dispose();
+    }
+
+    get configuration(): DebugConfiguration {
+        return this.options.configuration;
     }
 
     protected _capabilities: DebugProtocol.Capabilities = {};
@@ -125,12 +130,28 @@ export class DebugSession implements CompositeTreeElement {
     getSourceForUri(uri: URI): DebugSource | undefined {
         return this.sources.get(uri.toString());
     }
-    toSource(uri: URI): DebugSource {
+    async toSource(uri: URI): Promise<DebugSource> {
         const source = this.getSourceForUri(uri);
         if (source) {
             return source;
         }
-        return this.getSource(DebugSource.toSource(uri));
+
+        return this.getSource(await this.toDebugSource(uri));
+    }
+
+    async toDebugSource(uri: URI): Promise<DebugProtocol.Source> {
+        if (uri.scheme === DebugSource.SCHEME) {
+            return {
+                name: uri.path.toString(),
+                sourceReference: Number(uri.query)
+            };
+        }
+        const name = uri.displayName;
+        let path: string | undefined = uri.toString();
+        if (uri.scheme === 'file') {
+            path = await this.fileSystem.getFsPath(path);
+        }
+        return { name, path };
     }
 
     protected _threads = new Map<number, DebugThread>();
@@ -246,7 +267,7 @@ export class DebugSession implements CompositeTreeElement {
                 await this.sendRequest('launch', this.configuration);
             }
         } catch (reason) {
-            this.connection['fire']('exited', { reason });
+            this.fireExited(reason);
             await this.messages.showMessage({
                 type: MessageType.Error,
                 text: reason.message || 'Debug session initialization failed. See console for details.',
@@ -267,8 +288,54 @@ export class DebugSession implements CompositeTreeElement {
         await this.updateThreads(undefined);
     }
 
-    async disconnect(args: DebugProtocol.DisconnectArguments = {}): Promise<void> {
-        await this.sendRequest('disconnect', args);
+    protected terminated = false;
+    async terminate(restart?: boolean): Promise<void> {
+        if (!this.terminated && this.capabilities.supportsTerminateRequest && this.configuration.request === 'launch') {
+            this.terminated = true;
+            await this.connection.sendRequest('terminate', { restart });
+            if (!await this.exited(1000)) {
+                await this.disconnect(restart);
+            }
+        } else {
+            await this.disconnect(restart);
+        }
+    }
+    protected async disconnect(restart?: boolean): Promise<void> {
+        try {
+            await this.sendRequest('disconnect', { restart });
+        } catch (reason) {
+            this.fireExited(reason);
+            return;
+        }
+        const timeout = 500;
+        if (!await this.exited(timeout)) {
+            this.fireExited(new Error(`timeout after ${timeout} ms`));
+        }
+    }
+
+    protected fireExited(reason?: Error): void {
+        this.connection['fire']('exited', { reason });
+    }
+    protected exited(timeout: number): Promise<boolean> {
+        return new Promise<boolean>(resolve => {
+            const listener = this.on('exited', () => {
+                listener.dispose();
+                resolve(true);
+            });
+            setTimeout(() => {
+                listener.dispose();
+                resolve(false);
+            }, timeout);
+        });
+    }
+
+    async restart(): Promise<boolean> {
+        if (this.capabilities.supportsRestartRequest) {
+            this.terminated = false;
+            await this.sendRequest('restart', {});
+            return true;
+        }
+        return false;
     }
 
     async completions(text: string, column: number, line: number): Promise<DebugProtocol.CompletionItem[]> {
@@ -287,11 +354,16 @@ export class DebugSession implements CompositeTreeElement {
         return this.connection.sendRequest(command, args);
     }
 
+    sendCustomRequest<T extends DebugProtocol.Response>(command: string, args?: any): Promise<T> {
+        return this.connection.sendCustomRequest(command, args);
+    }
+
     on<K extends keyof DebugEventTypes>(kind: K, listener: (e: DebugEventTypes[K]) => any): Disposable {
         return this.connection.on(kind, listener);
     }
-    onCustom<E extends DebugProtocol.Event>(kind: string, listener: (e: E) => any): Disposable {
-        return this.connection.onCustom(kind, listener);
+
+    get onDidCustomEvent(): Event<DebugProtocol.Event> {
+        return this.connection.onDidCustomEvent;
     }
 
     protected async runInTerminal({ arguments: { title, cwd, args, env } }: DebugProtocol.RunInTerminalRequest): Promise<DebugProtocol.RunInTerminalResponse['body']> {
@@ -321,7 +393,9 @@ export class DebugSession implements CompositeTreeElement {
         return this.pendingThreads = this.pendingThreads.then(async () => {
             try {
                 const response = await this.sendRequest('threads', {});
-                this.doUpdateThreads(response.body.threads, stoppedDetails);
+                // java debugger returns an empty body sometimes
+                const threads = response && response.body && response.body.threads || [];
+                this.doUpdateThreads(threads, stoppedDetails);
             } catch (e) {
                 console.error(e);
             }
@@ -334,10 +408,11 @@ export class DebugSession implements CompositeTreeElement {
             const id = raw.id;
             const thread = existing.get(id) || new DebugThread(this);
             this._threads.set(id, thread);
-            thread.update({
-                raw,
-                stoppedDetails: stoppedDetails && stoppedDetails.threadId === id ? stoppedDetails : undefined
-            });
+            const data: Partial<Mutable<DebugThreadData>> = { raw };
+            if (stoppedDetails && (stoppedDetails.allThreadsStopped || stoppedDetails.threadId === id)) {
+                data.stoppedDetails = stoppedDetails;
+            }
+            thread.update(data);
         }
         this.updateCurrentThread(stoppedDetails);
     }
@@ -396,15 +471,20 @@ export class DebugSession implements CompositeTreeElement {
         try {
             const raw = body.breakpoint;
             if (body.reason === 'new') {
-                const breakpoint = this.toBreakpoint(raw);
-                if (breakpoint) {
-                    const breakpoints = this.getBreakpoints(breakpoint.uri);
-                    breakpoints.push(breakpoint);
-                    this.setBreakpoints(breakpoint.uri, breakpoints);
+                if (raw.source && typeof raw.line === 'number') {
+                    const uri = DebugSource.toUri(raw.source);
+                    const origin = SourceBreakpoint.create(uri, { line: raw.line, column: 1 });
+                    if (this.breakpoints.addBreakpoint(origin)) {
+                        const breakpoints = this.getBreakpoints(uri);
+                        const breakpoint = new DebugBreakpoint(origin, this.labelProvider, this.breakpoints, this.editorManager, this);
+                        breakpoint.update({ raw });
+                        breakpoints.push(breakpoint);
+                        this.setBreakpoints(uri, breakpoints);
+                    }
                 }
             }
             if (body.reason === 'removed' && raw.id) {
-                const toRemove = this.findBreakpoint(b => b.id === raw.id);
+                const toRemove = this.findBreakpoint(b => b.idFromAdapter === raw.id);
                 if (toRemove) {
                     toRemove.remove();
                     const breakpoints = this.getBreakpoints(toRemove.uri);
@@ -416,7 +496,7 @@ export class DebugSession implements CompositeTreeElement {
                 }
             }
             if (body.reason === 'changed' && raw.id) {
-                const toUpdate = this.findBreakpoint(b => b.id === raw.id);
+                const toUpdate = this.findBreakpoint(b => b.idFromAdapter === raw.id);
                 if (toUpdate) {
                     toUpdate.update({ raw });
                     this.fireDidChangeBreakpoints(toUpdate.uri);
@@ -436,21 +516,6 @@ export class DebugSession implements CompositeTreeElement {
         }
         return undefined;
     }
-    protected toBreakpoint(raw: DebugProtocol.Breakpoint): DebugBreakpoint | undefined {
-        if (!raw.source || !raw.line) {
-            return undefined;
-        }
-        const breakpoint = new DebugBreakpoint({
-            uri: DebugSource.toUri(raw.source).toString(),
-            enabled: true,
-            raw: {
-                line: raw.line,
-                column: raw.column
-            }
-        }, this.labelProvider, this.breakpoints, this.editorManager, this);
-        breakpoint.update({ raw });
-        return breakpoint;
-    }
     protected async updateBreakpoints(options: {
         uri?: URI,
         sourceModified: boolean
@@ -460,18 +525,41 @@ export class DebugSession implements CompositeTreeElement {
         }
         const { uri, sourceModified } = options;
         for (const affectedUri of this.getAffectedUris(uri)) {
-            const source = this.toSource(affectedUri);
+            const source = await this.toSource(affectedUri);
             const all = this.breakpoints.findMarkers({ uri: affectedUri }).map(({ data }) =>
                 new DebugBreakpoint(data, this.labelProvider, this.breakpoints, this.editorManager, this)
             );
             const enabled = all.filter(b => b.enabled);
-            const response = await this.sendRequest('setBreakpoints', {
-                source: source.raw,
-                sourceModified,
-                breakpoints: enabled.map(({ origin }) => origin.raw)
-            });
-            response.body.breakpoints.map((raw, index) => enabled[index].update({ raw }));
-            this.setBreakpoints(affectedUri, all);
+
+            try {
+                const response = await this.sendRequest('setBreakpoints', {
+                    source: source.raw,
+                    sourceModified,
+                    breakpoints: enabled.map(({ origin }) => origin.raw)
+                });
+                response.body.breakpoints.map((raw, index) => enabled[index].update({ raw }));
+            } catch (error) {
+                // could be error or promise rejection of DebugProtocol.SetBreakpointsResponse
+                if (error instanceof Error) {
+                    console.error(`Error setting breakpoints: ${error.message}`);
+                } else {
+                    // handle adapters that send failed DebugProtocol.SetBreakpointsResponse for invalid breakpoints
+                    const genericMessage: string = 'Breakpoint not valid for current debug session';
+                    const message: string = error.message ? `${error.message}` : genericMessage;
+                    console.warn(`Could not handle breakpoints for ${affectedUri}: ${message}, disabling...`);
+                    enabled.forEach((brkPoint: DebugBreakpoint) => {
+                        const debugBreakpointData: Partial<DebugBreakpointData> = {
+                            raw: {
+                                verified: false,
+                                message
+                            }
+                        };
+                        brkPoint.update(debugBreakpointData);
+                    });
+                }
+            } finally {
+                this.setBreakpoints(affectedUri, all);
+            }
         }
     }
     protected setBreakpoints(uri: URI, breakpoints: DebugBreakpoint[]): void {
@@ -505,8 +593,8 @@ export class DebugSession implements CompositeTreeElement {
     }
 
     get label(): string {
-        if (this.configuration.__configurationId) {
-            return this.configuration.name + ' (' + (this.configuration.__configurationId + 1) + ')';
+        if (InternalDebugSessionOptions.is(this.options) && this.options.id) {
+            return this.configuration.name + ' (' + (this.options.id + 1) + ')';
         }
         return this.configuration.name;
     }

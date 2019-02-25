@@ -225,7 +225,7 @@ Note, that it is possible to have an array of values for single name, because it
 Function to create new terminal with specific arguments:
 
 ```typescript
-const terminal = theia.window.createTerminal("Bash terminal", "/bin/bash", shellArgs: ["-l"]);
+const terminal = theia.window.createTerminal("Bash terminal", "/bin/bash", ["-l"]);
 ```
 
 Where are:
@@ -249,7 +249,7 @@ Where are:
  - "shellPath" - path to the executable shell, for example "/bin/bash", "bash", "sh" or so on.
  - "shellArgs" - shell command arguments, for example without login: "-l". If you defined shell command "/bin/bash" and set up shell arguments "-l" than will be created terminal process with command "/bin/bash -l". And client side will connect to stdin/stdout of this process to interaction with user.
  - "cwd" - current working directory;
- - "env"- enviroment variables for terminal process, for example TERM - identifier terminal window capabilities.
+ - "env"- environment variables for terminal process, for example TERM - identifier terminal window capabilities.
 
 Function to create new terminal with defined theia.TerminalOptions described above:
 
@@ -279,7 +279,7 @@ Where are:
 - first argument - text content.
 - second argument - in case true, terminal will apply new line after the text, otherwise will send only the text.
 
-Distroy terminal:
+Destroy terminal:
 
 ```typescript
 terminal.dispose();
@@ -355,7 +355,7 @@ If no diagnostics found empty array will be returned.
 
 Note, that returned array from `getDiagnostics` call are readonly.
 
-To tracks changes in diagnostics `onDidChangeDiagnostics` event should be used. Within event handler list of uris with changed diadgnostics is available. Example:
+To tracks changes in diagnostics `onDidChangeDiagnostics` event should be used. Within event handler list of uris with changed diagnostics is available. Example:
 
 ```typescript
 disposables.push(
@@ -371,7 +371,7 @@ Also it is possible to add own diagnostics. To do this, one should create diagno
 const diagnosticsCollection = theia.languages.createDiagnosticCollection(collectionName);
 ```
 
-Collection name can be ommited. In such case the name will be auto-generated.
+Collection name can be omitted. In such case the name will be auto-generated.
 
 When collection is created, one could operate with diagnostics. The collection object exposes all needed methods: `get`, `set`, `has`, `delete`, `clear`, `forEach` and `dispose`.
 
@@ -397,7 +397,7 @@ changes.push([uri1, diagnostics4]); // uri1 again
 diagnosticsCollection.set(changes);
 ```
 
-If the same uri is used a few times, corresponding diagnostics will be merged. In case of `undefined` all previous, but not following, diagnostics will be cleared. If `undefined` is given insted of tuples array the whole collection will be cleared.
+If the same uri is used a few times, corresponding diagnostics will be merged. In case of `undefined` all previous, but not following, diagnostics will be cleared. If `undefined` is given instead of tuples array the whole collection will be cleared.
 
 To iterate over all diagnostics within the collection `forEach` method could be used:
 
@@ -407,7 +407,7 @@ diagnosticsCollection.forEach((uri, diagnostics) => {
 }
 ```
 
-`dispose` method should be used when the collection is not needed any more. In case of attempt to do an operaton after disposing an error will be thrown.
+`dispose` method should be used when the collection is not needed any more. In case of attempt to do an operation after disposing an error will be thrown.
 
 #### Signature help
 
@@ -498,6 +498,26 @@ theia.languages.registerHoverProvider({scheme: 'file'}, {
 });
 ```
 
+#### Document Highlight provider
+
+It is possible to provide document highlight source for a symbol from within plugin.
+To do this one should register corresponding provider. For example:
+
+```typescript
+const documentsSelector: theia.DocumentSelector = { scheme: 'file', language: 'typescript' };
+const handler: theia.DocumentHighlightProvider = { provideDocumentHighlights: provideDocumentHighlightsHandler };
+
+const disposable = theia.languages.registerDocumentHighlightProvider(documentsSelector, handler);
+
+...
+
+function provideDocumentHighlightsHandler(document: theia.TextDocument, position: theia.Position): theia.ProviderResult<theia.DocumentHighlight[]> {
+    // code here
+}
+```
+
+It is possible to return a few sources, but for most cases only one is enough. Return `undefined` to provide nothing.
+
 #### Definition provider
 
 It is possible to provide definition source for a symbol from within plugin.
@@ -519,6 +539,68 @@ function provideDefinitionHandler(document: theia.TextDocument, position: theia.
 The handler will be invoked each time when a user executes `Go To Definition` command.
 It is possible to return a few sources, but for most cases only one is enough. Return `undefined` to provide nothing.
 
+#### Implementation provider
+
+It is possible to provide implementation source for a symbol from within plugin.
+To do this one should register corresponding provider. For example:
+
+```typescript
+const documentsSelector: theia.DocumentSelector = { scheme: 'file', language: 'typescript' };
+const handler: theia.ImplementationProvider = { provideImplementation: provideImplementationHandler };
+
+const disposable = theia.languages.registerImplementationProvider(documentsSelector, handler);
+
+...
+
+function provideImplementationHandler(document: theia.TextDocument, position: theia.Position): theia.ProviderResult<theia.Definition | theia.DefinitionLink[]> {
+    // code here
+}
+```
+
+It is possible to return a few sources, but for most cases only one is enough. Return `undefined` to provide nothing.
+
+#### Type Definition provider
+
+It is possible to provide type definition source for a symbol from within plugin.
+To do this one should register corresponding provider. For example:
+
+```typescript
+const documentsSelector: theia.DocumentSelector = { scheme: 'file', language: 'typescript' };
+const handler: theia.TypeDefinitionProvider = { provideTypeDefinition: provideTypeDefinitionHandler };
+
+const disposable = theia.languages.registerTypeDefinitionProvider(documentsSelector, handler);
+
+...
+
+function provideTypeDefinitionHandler(document: theia.TextDocument, position: theia.Position): theia.ProviderResult<theia.Definition | theia.DefinitionLink[]> {
+    // code here
+}
+```
+
+The handler will be invoked each time when a user executes `Go To Type Definition` command.
+It is possible to return a few sources, but for most cases only one is enough. Return `undefined` to provide nothing.
+
+#### Reference provider
+
+It is possible to provide reference sources for a symbol from within plugin.
+To do this one should register corresponding provider. For example:
+
+```typescript
+const documentsSelector: theia.DocumentSelector = { scheme: 'file', language: 'typescript' };
+const handler: theia.ReferenceProvider = { provideReferences: provideReferencesHandler };
+
+const disposable = theia.languages.registerReferenceProvider(documentsSelector, handler);
+
+...
+
+function provideReferencesHandler(document: theia.TextDocument, position: theia.Position, context: theia.ReferenceContext): theia.ProviderResult<theia.Location[]> {
+    // code here
+}
+```
+
+The handler will be invoked each time when a user executes `Find All References` command.
+It is possible to return a few sources. Return `undefined` to provide nothing.
+
 #### Document Link Provider
 
 A document link provider allows to add a custom link detection logic.
@@ -533,7 +615,100 @@ const disposable = theia.languages.registerDocumentLinkProvider(documentsSelecto
 
 ...
 
-function provideLinks(document: theia.TextDocument): theia.ProviderResult<theia.DocumentLink> {
+function provideLinks(document: theia.TextDocument): theia.ProviderResult<theia.DocumentLink[]> {
+    // code here
+}
+```
+
+#### Code Lens Provider
+
+A code lens provider allows to add a custom lens detection logic.
+
+Example of code lens provider registration:
+
+```typescript
+const documentsSelector: theia.DocumentSelector = { scheme: 'file', language: 'typescript' };
+const provider = { provideCodeLenses: provideLenses };
+
+const disposable = theia.languages.registerCodeLensProvider(documentsSelector, provider);
+
+...
+
+function provideLenses(document: theia.TextDocument): theia.ProviderResult<theia.CodeLens[]> {
+    // code here
+}
+```
+
+#### Code Symbol Provider
+
+A document symbol provider allows to add a custom logic for symbols detection.
+
+Example of code symbol provider registration:
+
+```typescript
+const documentsSelector: theia.DocumentSelector = { scheme: 'file', language: 'typescript' };
+const provider = { provideDocumentSymbols: provideSymbols };
+
+const disposable = theia.languages.registerDocumentSymbolProvider(documentsSelector, provider);
+
+...
+
+function provideSymbols(document: theia.TextDocument): theia.ProviderResult<theia.SymbolInformation[] | theia.DocumentSymbol[]> {
+    // code here
+}
+```
+
+#### Workspace Symbol Provider
+
+A workspace symbol provider allows you register symbols for the symbol search feature.
+
+resolveWorkspaceSymbol is not needed if all SymbolInformation's returned from
+provideWorkspaceSymbols have a location. Otherwise resolveWorkspaceSymbol is needed
+in order to resolve the location of the SymbolInformation.
+
+Example of workspace symbol provider registration:
+
+```typescript
+theia.languages.registerWorkspaceSymbolProvider({
+    provideWorkspaceSymbols(query: string): theia.SymbolInformation[] {
+        return [new theia.SymbolInformation('my symbol', 4, new theia.Range(new theia.Position(0, 0), new theia.Position(0, 0)), theia.Uri.parse("some_uri_to_file"))];
+    }
+} as theia.WorkspaceSymbolProvider);
+```
+
+In this case resolveWorkspaceSymbol is not needed because we have provided the location for every
+symbol returned from provideWorkspaceSymbols
+
+```typescript
+theia.languages.registerWorkspaceSymbolProvider({
+    provideWorkspaceSymbols(query: string): theia.SymbolInformation[] {
+        return [new theia.SymbolInformation('my symbol', 4, 'my container name', new theia.Location(theia.Uri.parse("some_uri_to_file"), undefined))];
+    },
+    resolveWorkspaceSymbol(symbolInformation: theia.SymbolInformation): theia.SymbolInformation {
+        symbolInformation.location.range = new theia.Range(new theia.Position(0, 0), new theia.Position(0, 0));
+        return symbolInformation;
+    }
+} as theia.WorkspaceSymbolProvider);
+```
+
+resolveWorkspaceSymbol is needed here because we have not provided the location for every
+symbol return from provideWorkspaceSymbol
+
+#### Folding
+
+A folding range provider allows you to add logic to fold and unfold custom regions of source code.
+
+Example of folding range provider registration:
+
+```typescript
+const documentsSelector: theia.DocumentSelector = { scheme: 'file', language: 'typescript' };
+const provider = { provideFoldingRanges: provideRanges };
+
+const disposable = theia.languages.registerFoldingRangeProvider(documentsSelector, provider);
+
+...
+
+function provideRanges(document: theia.TextDocument): theia.ProviderResult<theia.FoldingRange[]> {
     // code here
 }
 ```

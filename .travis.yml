@@ -21,6 +21,7 @@ cache:
   - packages/cpp/node_modules
   - packages/debug-nodejs/node_modules
   - packages/debug/node_modules
+  - packages/editor-preview/node_modules
   - packages/editor/node_modules
   - packages/editorconfig/node_modules
   - packages/extension-manager/node_modules
@@ -28,6 +29,7 @@ cache:
   - packages/filesystem/node_modules
   - packages/getting-started/node_modules
   - packages/git/node_modules
+  - packages/java-debug/node_modules
   - packages/java/node_modules
   - packages/json/node_modules
   - packages/keymaps/node_modules
@@ -58,6 +60,8 @@ cache:
   - packages/variable-resolver/node_modules
   - packages/workspace/node_modules
 # end_cache_directories
+  - packages/java-debug/download
+  - packages/debug-nodejs/download
 branches:
   only:
   - master
@@ -78,10 +82,13 @@ before_script:
   - export DISPLAY=:99.0; sh -e /etc/init.d/xvfb start ;
   - google-chrome-stable --headless --disable-gpu --remote-debugging-port=9222 http://localhost \&  ;
 before_install:
-  - curl -o- -L https://yarnpkg.com/install.sh | bash -s -- --version 1.7.0
+  - curl -o- -L https://yarnpkg.com/install.sh | bash -s -- --version 1.13.0
   - export PATH=$HOME/.yarn/bin:$PATH ;
 install: yarn && scripts/check_git_status.sh
-script: travis_retry yarn test ;
+script:
+  - travis_retry yarn test:theia ;
+  - travis_retry yarn test:electron ;
+  - travis_retry yarn test:browser ;
 notifications:
   webhooks:
     urls:
@@ -99,7 +106,8 @@ jobs:
   - os: osx
     env: CXX=c++
     before_script: skip
-    script: travis_retry yarn test:theia ;
+    script:
+      - travis_retry yarn test:theia ;
   - stage: deploy
     if: NOT type IN (cron, pull_request)
     os: linux

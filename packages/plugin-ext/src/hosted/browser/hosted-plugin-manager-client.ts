@@ -14,6 +14,7 @@
  * SPDX-License-Identifier: EPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0
  ********************************************************************************/
 
+import * as path from 'path';
 import { injectable, inject, postConstruct } from 'inversify';
 import URI from '@theia/core/lib/common/uri';
 import { MessageService, Command, Emitter, Event, UriSelection } from '@theia/core/lib/common';
@@ -26,32 +27,39 @@ import { HostedPluginServer } from '../../common/plugin-protocol';
 import { DebugConfiguration as HostedDebugConfig } from '../../common';
 import { DebugSessionManager } from '@theia/debug/lib/browser/debug-session-manager';
 import { HostedPluginPreferences } from './hosted-plugin-preferences';
+import { FileUri } from '@theia/core/lib/node/file-uri';
 
 /**
  * Commands to control Hosted plugin instances.
  */
 export namespace HostedPluginCommands {
+    const HOSTED_PLUGIN_CATEGORY = 'Hosted Plugin';
     export const START: Command = {
         id: 'hosted-plugin:start',
-        label: 'Hosted Plugin: Start Instance'
+        category: HOSTED_PLUGIN_CATEGORY,
+        label: 'Start Instance'
     };
 
     export const DEBUG: Command = {
         id: 'hosted-plugin:debug',
-        label: 'Hosted Plugin: Debug Instance'
+        category: HOSTED_PLUGIN_CATEGORY,
+        label: 'Debug Instance'
     };
 
     export const STOP: Command = {
         id: 'hosted-plugin:stop',
-        label: 'Hosted Plugin: Stop Instance'
+        category: HOSTED_PLUGIN_CATEGORY,
+        label: 'Stop Instance'
     };
     export const RESTART: Command = {
         id: 'hosted-plugin:restart',
-        label: 'Hosted Plugin: Restart Instance'
+        category: HOSTED_PLUGIN_CATEGORY,
+        label: 'Restart Instance'
     };
     export const SELECT_PATH: Command = {
         id: 'hosted-plugin:select-path',
-        label: 'Hosted Plugin: Select Path'
+        category: HOSTED_PLUGIN_CATEGORY,
+        label: 'Select Path'
     };
 }
 
@@ -165,11 +173,17 @@ export class HostedPluginManagerClient {
         this.isDebug = true;
 
         await this.start({ debugMode: this.hostedPluginPreferences['hosted-plugin.debugMode'] });
+        const outFiles = this.pluginLocation && [path.join(FileUri.fsPath(this.pluginLocation), '**', '*.js')];
         await this.debugSessionManager.start({
-            type: 'node',
-            request: 'attach',
-            timeout: 30000,
-            name: 'Hosted Plugin'
+            configuration: {
+                type: 'node',
+                request: 'attach',
+                timeout: 30000,
+                name: 'Hosted Plugin',
+                smartStep: true,
+                sourceMaps: !!outFiles,
+                outFiles
+            }
         });
     }
 

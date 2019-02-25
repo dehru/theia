@@ -14,13 +14,15 @@
  * SPDX-License-Identifier: EPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0
  ********************************************************************************/
 
-import { injectable, inject } from 'inversify';
+import { injectable, inject, postConstruct } from 'inversify';
+import { MessageType } from '@theia/core/lib/common/message-service-protocol';
 import {
     QuickOpenService, QuickOpenModel, QuickOpenOptions,
     QuickOpenItem, QuickOpenGroupItem, QuickOpenMode, KeySequence
 } from '@theia/core/lib/browser';
 import { KEY_CODE_MAP } from './monaco-keycode-map';
-import { ILogger } from '@theia/core';
+import { ContextKey } from '@theia/core/lib/browser/context-key-service';
+import { MonacoContextKeyService } from './monaco-context-key-service';
 
 export interface MonacoQuickOpenControllerOpts extends monaco.quickOpen.IQuickOpenControllerOpts {
     readonly prefix?: string;
@@ -38,7 +40,12 @@ export class MonacoQuickOpenService extends QuickOpenService {
     protected opts: MonacoQuickOpenControllerOpts | undefined;
     protected previousActiveElement: Element | undefined;
 
-    constructor(@inject(ILogger) protected readonly logger: ILogger) {
+    @inject(MonacoContextKeyService)
+    protected readonly contextKeyService: MonacoContextKeyService;
+
+    protected inQuickOpenKey: ContextKey<boolean>;
+
+    constructor() {
         super();
         const overlayWidgets = document.createElement('div');
         overlayWidgets.classList.add('quick-open-overlay');
@@ -51,16 +58,40 @@ export class MonacoQuickOpenService extends QuickOpenService {
         overlayWidgets.appendChild(container);
     }
 
+    @postConstruct()
+    protected init(): void {
+        this.inQuickOpenKey = this.contextKeyService.createKey<boolean>('inQuickOpen', false);
+    }
+
     open(model: QuickOpenModel, options?: QuickOpenOptions): void {
         this.internalOpen(new MonacoQuickOpenControllerOptsImpl(model, options));
     }
 
+    showDecoration(type: MessageType): void {
+        let decoration = monaco.MarkerSeverity.Info;
+        if (type === MessageType.Warning) {
+            decoration = monaco.MarkerSeverity.Warning;
+        } else if (type === MessageType.Error) {
+            decoration = monaco.MarkerSeverity.Error;
+        }
+        this.showInputDecoration(decoration);
+    }
+    hideDecoration(): void {
+        this.clearInputDecoration();
+    }
+
     internalOpen(opts: MonacoQuickOpenControllerOpts): void {
         this.opts = opts;
-        this.previousActiveElement = window.document.activeElement || undefined;
+        const activeContext = window.document.activeElement || undefined;
+        if (!activeContext || !this.container.contains(activeContext)) {
+            this.previousActiveElement = activeContext;
+            this.contextKeyService.activeContext = activeContext instanceof HTMLElement ? activeContext : undefined;
+        }
+        this.hideDecoration();
         this.widget.show(this.opts.prefix || '');
         this.setPlaceHolder(opts.inputAriaLabel);
         this.setPassword(opts.password ? true : false);
+        this.inQuickOpenKey.set(true);
     }
 
     setPlaceHolder(placeHolder: string): void {
@@ -100,6 +131,7 @@ export class MonacoQuickOpenService extends QuickOpenService {
         this._widget = new monaco.quickOpen.QuickOpenWidget(this.container, {
             onOk: () => {
                 this.previousActiveElement = undefined;
+                this.contextKeyService.activeContext = undefined;
                 this.onClose(false);
             },
             onCancel: () => {
@@ -107,6 +139,7 @@ export class MonacoQuickOpenService extends QuickOpenService {
                     this.previousActiveElement.focus();
                 }
                 this.previousActiveElement = undefined;
+                this.contextKeyService.activeContext = undefined;
                 this.onClose(true);
             },
             onType: lookFor => this.onType(lookFor || ''),
@@ -134,6 +167,7 @@ export class MonacoQuickOpenService extends QuickOpenService {
         if (this.opts && this.opts.onClose) {
             this.opts.onClose(cancelled);
         }
+        this.inQuickOpenKey.set(false);
     }
 
     protected async onType(lookFor: string): Promise<void> {
@@ -154,6 +188,7 @@ export class MonacoQuickOpenService extends QuickOpenService {
 export class MonacoQuickOpenControllerOptsImpl implements MonacoQuickOpenControllerOpts {
 
     protected readonly options: QuickOpenOptions.Resolved;
+    readonly password?: boolean;
 
     constructor(
         protected readonly model: QuickOpenModel,
@@ -161,14 +196,19 @@ export class MonacoQuickOpenControllerOptsImpl implements MonacoQuickOpenControl
     ) {
         this.model = model;
         this.options = QuickOpenOptions.resolve(options);
+        this.password = this.options.password;
     }
 
     get prefix(): string {
         return this.options.prefix;
     }
 
+    get ignoreFocusOut(): boolean {
+        return this.options.ignoreFocusOut;
+    }
+
     get inputAriaLabel(): string {
-        return this.options.placeholder;
+        return this.options.placeholder || '';
     }
 
     onClose(cancelled: boolean): void {

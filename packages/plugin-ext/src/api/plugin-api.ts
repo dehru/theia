@@ -21,9 +21,8 @@ import * as theia from '@theia/plugin';
 import { PluginLifecycle, PluginModel, PluginMetadata, PluginPackage } from '../common/plugin-protocol';
 import { QueryParameters } from '../common/env';
 import { TextEditorCursorStyle } from '../common/editor-options';
-import { TextEditorLineNumbersStyle, EndOfLine, OverviewRulerLane, IndentAction } from '../plugin/types-impl';
+import { TextEditorLineNumbersStyle, EndOfLine, OverviewRulerLane, IndentAction, FileOperationOptions } from '../plugin/types-impl';
 import { UriComponents } from '../common/uri-components';
-import { PreferenceChange } from '@theia/core/lib/browser';
 import { ConfigurationTarget } from '../plugin/types-impl';
 import {
     SerializedDocumentFilter,
@@ -35,17 +34,45 @@ import {
     MarkerData,
     SignatureHelp,
     Hover,
+    DocumentHighlight,
     FormattingOptions,
     SingleEditOperation as ModelSingleEditOperation,
     Definition,
     DefinitionLink,
-    DocumentLink
+    DocumentLink,
+    CodeLensSymbol,
+    Command,
+    TextEdit,
+    DocumentSymbol,
+    ReferenceContext,
+    FileWatcherSubscriberOptions,
+    FileChangeEvent,
+    TextDocumentShowOptions,
+    WorkspaceRootsChangeEvent,
+    Location,
+    Breakpoint,
+    ColorPresentation,
+    RenameLocation,
 } from './model';
+import { ExtPluginApi } from '../common/plugin-ext-api-contribution';
+import { KeysToAnyValues, KeysToKeysToAnyValue } from '../common/types';
+import { CancellationToken, Progress, ProgressOptions } from '@theia/plugin';
+import { IJSONSchema, IJSONSchemaSnippet } from '@theia/core/lib/common/json-schema';
+import { DebuggerDescription } from '@theia/debug/lib/common/debug-service';
+import { DebugProtocol } from 'vscode-debugprotocol';
+import { SymbolInformation } from 'vscode-languageserver-types';
 
 export interface PluginInitData {
     plugins: PluginMetadata[];
-    preferences: { [key: string]: any };
+    preferences: PreferenceData;
+    globalState: KeysToKeysToAnyValue;
+    workspaceState: KeysToKeysToAnyValue;
     env: EnvInit;
+    extApi?: ExtPluginApi[];
+}
+
+export interface PreferenceData {
+    [scope: number]: any;
 }
 
 export interface Plugin {
@@ -54,6 +81,11 @@ export interface Plugin {
     model: PluginModel;
     rawModel: PluginPackage;
     lifecycle: PluginLifecycle;
+}
+
+export interface ConfigStorage {
+    hostLogPath: string;
+    hostStoragePath: string,
 }
 
 export interface EnvInit {
@@ -115,15 +147,21 @@ export const emptyPlugin: Plugin = {
 export interface PluginManagerExt {
     $stopPlugin(contextPath: string): PromiseLike<void>;
 
-    $init(pluginInit: PluginInitData): PromiseLike<void>;
+    $init(pluginInit: PluginInitData, configStorage: ConfigStorage): PromiseLike<void>;
+
+    $updateStoragePath(path: string | undefined): PromiseLike<void>;
 }
 
 export interface CommandRegistryMain {
     $registerCommand(command: theia.Command): void;
-
     $unregisterCommand(id: string): void;
-    $executeCommand<T>(id: string, args: any[]): PromiseLike<T | undefined>;
+
+    $registerHandler(id: string): void;
+    $unregisterHandler(id: string): void;
+
+    $executeCommand<T>(id: string, ...args: any[]): PromiseLike<T | undefined>;
     $getCommands(): PromiseLike<string[]>;
+    $getKeyBinding(commandId: string): PromiseLike<theia.CommandKeyBinding[] | undefined>;
 }
 
 export interface CommandRegistryExt {
@@ -131,7 +169,25 @@ export interface CommandRegistryExt {
 }
 
 export interface TerminalServiceExt {
-    $terminalClosed(id: number): void;
+    $terminalCreated(id: string, name: string): void;
+    $terminalNameChanged(id: string, name: string): void;
+    $terminalOpened(id: string, processId: number): void;
+    $terminalClosed(id: string): void;
+    $currentTerminalChanged(id: string | undefined): void;
+}
+
+export interface ConnectionMain {
+    $createConnection(id: string): Promise<void>;
+    $deleteConnection(id: string): Promise<void>;
+    $sendMessage(id: string, message: string): void;
+    $createConnection(id: string): Promise<void>;
+    $deleteConnection(id: string): Promise<void>;
+}
+
+export interface ConnectionExt {
+    $createConnection(id: string): Promise<void>;
+    $deleteConnection(id: string): Promise<void>
+    $sendMessage(id: string, message: string): void;
 }
 
 export interface TerminalServiceMain {
@@ -139,7 +195,7 @@ export interface TerminalServiceMain {
      * Create new Terminal with Terminal options.
      * @param options - object with parameters to create new terminal.
      */
-    $createTerminal(options: theia.TerminalOptions): PromiseLike<number>;
+    $createTerminal(id: string, options: theia.TerminalOptions): Promise<string>;
 
     /**
      * Send text to the terminal by id.
@@ -147,26 +203,26 @@ export interface TerminalServiceMain {
      * @param text - text content.
      * @param addNewLine - in case true - add new line after the text, otherwise - don't apply new line.
      */
-    $sendText(id: number, text: string, addNewLine?: boolean): void;
+    $sendText(id: string, text: string, addNewLine?: boolean): void;
 
     /**
      * Show terminal on the UI panel.
      * @param id - terminal id.
      * @param preserveFocus - set terminal focus in case true value, and don't set focus otherwise.
      */
-    $show(id: number, preserveFocus?: boolean): void;
+    $show(id: string, preserveFocus?: boolean): void;
 
     /**
      * Hide UI panel where is located terminal widget.
      * @param id - terminal id.
      */
-    $hide(id: number): void;
+    $hide(id: string): void;
 
     /**
      * Distroy terminal.
      * @param id - terminal id.
      */
-    $dispose(id: number): void;
+    $dispose(id: string): void;
 }
 
 export interface AutoFocus {
@@ -207,12 +263,14 @@ export interface MessageRegistryMain {
 }
 
 export interface StatusBarMessageRegistryMain {
-    $setMessage(text: string,
+    $setMessage(id: string,
+        text: string | undefined,
         priority: number,
         alignment: theia.StatusBarAlignment,
         color: string | undefined,
         tooltip: string | undefined,
-        command: string | undefined): PromiseLike<string>;
+        command: string | undefined): PromiseLike<void>;
+    $update(id: string, message: string): void;
     $dispose(id: string): void;
 }
 
@@ -316,11 +374,17 @@ export interface WorkspaceMain {
     $pickWorkspaceFolder(options: WorkspaceFolderPickOptionsMain): Promise<theia.WorkspaceFolder | undefined>;
     $startFileSearch(includePattern: string, excludePatternOrDisregardExcludes: string | false,
         maxResults: number | undefined, token: theia.CancellationToken): PromiseLike<UriComponents[]>;
-
+    $registerTextDocumentContentProvider(scheme: string): Promise<void>;
+    $unregisterTextDocumentContentProvider(scheme: string): void;
+    $onTextDocumentContentChange(uri: string, content: string): void;
+    $registerFileSystemWatcher(options: FileWatcherSubscriberOptions): Promise<string>;
+    $unregisterFileSystemWatcher(watcherId: string): Promise<void>;
 }
 
 export interface WorkspaceExt {
-    $onWorkspaceFoldersChanged(event: theia.WorkspaceFoldersChangeEvent): void;
+    $onWorkspaceFoldersChanged(event: WorkspaceRootsChangeEvent): void;
+    $provideTextDocumentContent(uri: string): Promise<string | undefined>;
+    $fileChanged(event: FileChangeEvent): void;
 }
 
 export interface DialogsMain {
@@ -374,6 +438,27 @@ export enum TreeViewItemCollapsibleState {
 
 export interface WindowStateExt {
     $onWindowStateChanged(focus: boolean): void;
+}
+
+export interface NotificationExt {
+    withProgress<R>(
+        options: ProgressOptions,
+        task: (progress: Progress<{ message?: string; increment?: number }>, token: CancellationToken) => PromiseLike<R>
+    ): PromiseLike<R>;
+    $onCancel(id: string): void;
+}
+
+export interface NotificationMain {
+    $startProgress(message: string): Promise<string | undefined>;
+    $stopProgress(id: string): void;
+    $updateProgress(message: string, item: { message?: string, increment?: number }): void;
+}
+
+export interface StatusBarExt {
+    withProgress<R>(
+        options: ProgressOptions,
+        task: (progress: Progress<{ message?: string; increment?: number }>, token: CancellationToken) => PromiseLike<R>
+    ): PromiseLike<R>;
 }
 
 export enum EditorPosition {
@@ -561,7 +646,7 @@ export interface TextEditorsMain {
     $tryRevealRange(id: string, range: Range, revealType: TextEditorRevealType): Promise<void>;
     $trySetSelections(id: string, selections: Selection[]): Promise<void>;
     $tryApplyEdits(id: string, modelVersionId: number, edits: SingleEditOperation[], opts: ApplyEditsOptions): Promise<boolean>;
-    // $tryApplyWorkspaceEdit(workspaceEditDto: WorkspaceEditDto): Promise<boolean>;
+    $tryApplyWorkspaceEdit(workspaceEditDto: WorkspaceEditDto): Promise<boolean>;
     $tryInsertSnippet(id: string, template: string, selections: Range[], opts: UndoStopOptions): Promise<boolean>;
     // $getDiffInformation(id: string): Promise<editorCommon.ILineChange[]>;
 }
@@ -613,18 +698,20 @@ export interface ModelChangedEvent {
 export interface DocumentsExt {
     $acceptModelModeChanged(startUrl: UriComponents, oldModeId: string, newModeId: string): void;
     $acceptModelSaved(strUrl: UriComponents): void;
+    $acceptModelWillSave(strUrl: UriComponents, reason: theia.TextDocumentSaveReason): Promise<SingleEditOperation[]>;
     $acceptDirtyStateChanged(strUrl: UriComponents, isDirty: boolean): void;
     $acceptModelChanged(strUrl: UriComponents, e: ModelChangedEvent, isDirty: boolean): void;
 }
 
 export interface DocumentsMain {
     $tryCreateDocument(options?: { language?: string; content?: string; }): Promise<UriComponents>;
-    $tryOpenDocument(uri: UriComponents): Promise<void>;
+    $tryOpenDocument(uri: UriComponents, options?: TextDocumentShowOptions): Promise<void>;
     $trySaveDocument(uri: UriComponents): Promise<boolean>;
 }
 
 export interface EnvMain {
     $getEnvVariable(envVarName: string): Promise<string | undefined>;
+    $getClientOperatingSystem(): Promise<theia.OperatingSystem>;
 }
 
 export interface PreferenceRegistryMain {
@@ -640,8 +727,13 @@ export interface PreferenceRegistryMain {
         resource: any | undefined
     ): PromiseLike<void>;
 }
+
+export interface PreferenceChangeExt {
+    preferenceName: string,
+    newValue: any
+}
 export interface PreferenceRegistryExt {
-    $acceptConfigurationChanged(data: { [key: string]: any }, eventData: PreferenceChange): void;
+    $acceptConfigurationChanged(data: { [key: string]: any }, eventData: PreferenceChangeExt): void;
 }
 
 export interface OutputChannelRegistryMain {
@@ -692,13 +784,75 @@ export interface SerializedLanguageConfiguration {
     onEnterRules?: SerializedOnEnterRule[];
 }
 
+export interface CodeActionDto {
+    title: string;
+    edit?: WorkspaceEditDto;
+    diagnostics?: MarkerData[];
+    command?: Command;
+    kind?: string;
+}
+
+export interface ResourceFileEditDto {
+    oldUri: UriComponents;
+    newUri: UriComponents;
+    options: FileOperationOptions;
+}
+
+export interface ResourceTextEditDto {
+    resource: UriComponents;
+    modelVersionId?: number;
+    edits: TextEdit[];
+}
+
+export interface WorkspaceEditDto {
+    edits: (ResourceFileEditDto | ResourceTextEditDto)[];
+    rejectReason?: string;
+}
+
+export interface LanguagesContributionExt {
+    $start(languageServerInfo: theia.LanguageServerInfo): void;
+}
+
+export interface LanguagesContributionMain {
+    $registerLanguageServerProvider(languageServerInfo: theia.LanguageServerInfo): void
+    $stop(id: string): void
+}
+
+export interface CommandProperties {
+    command: string;
+    args?: string[];
+    options?: { [key: string]: any };
+}
+
+export interface TaskDto {
+    type: string;
+    label: string;
+    source?: string;
+    // tslint:disable-next-line:no-any
+    [key: string]: any;
+}
+
+export interface TaskExecutionDto {
+    id: number;
+    task: TaskDto;
+}
+
+export interface ProcessTaskDto extends TaskDto, CommandProperties {
+    windows?: CommandProperties;
+    cwd?: string;
+}
+
 export interface LanguagesExt {
     $provideCompletionItems(handle: number, resource: UriComponents, position: Position, context: CompletionContext): Promise<CompletionResultDto | undefined>;
     $resolveCompletionItem(handle: number, resource: UriComponents, position: Position, completion: Completion): Promise<Completion>;
     $releaseCompletionItems(handle: number, id: number): void;
+    $provideImplementation(handle: number, resource: UriComponents, position: Position): Promise<Definition | DefinitionLink[] | undefined>;
+    $provideTypeDefinition(handle: number, resource: UriComponents, position: Position): Promise<Definition | DefinitionLink[] | undefined>;
     $provideDefinition(handle: number, resource: UriComponents, position: Position): Promise<Definition | DefinitionLink[] | undefined>;
+    $provideReferences(handle: number, resource: UriComponents, position: Position, context: ReferenceContext): Promise<Location[] | undefined>;
     $provideSignatureHelp(handle: number, resource: UriComponents, position: Position): Promise<SignatureHelp | undefined>;
     $provideHover(handle: number, resource: UriComponents, position: Position): Promise<Hover | undefined>;
+    $provideDocumentHighlights(handle: number, resource: UriComponents, position: Position): Promise<DocumentHighlight[] | undefined>;
     $provideDocumentFormattingEdits(handle: number, resource: UriComponents, options: FormattingOptions): Promise<ModelSingleEditOperation[] | undefined>;
     $provideDocumentRangeFormattingEdits(handle: number, resource: UriComponents, range: Range, options: FormattingOptions): Promise<ModelSingleEditOperation[] | undefined>;
     $provideOnTypeFormattingEdits(
@@ -710,6 +864,26 @@ export interface LanguagesExt {
     ): Promise<ModelSingleEditOperation[] | undefined>;
     $provideDocumentLinks(handle: number, resource: UriComponents): Promise<DocumentLink[] | undefined>;
     $resolveDocumentLink(handle: number, link: DocumentLink): Promise<DocumentLink | undefined>;
+    $provideCodeLenses(handle: number, resource: UriComponents): Promise<CodeLensSymbol[] | undefined>;
+    $resolveCodeLens(handle: number, resource: UriComponents, symbol: CodeLensSymbol): Promise<CodeLensSymbol | undefined>;
+    $provideCodeActions(
+        handle: number,
+        resource: UriComponents,
+        rangeOrSelection: Range | Selection,
+        context: monaco.languages.CodeActionContext
+    ): Promise<monaco.languages.CodeAction[]>;
+    $provideDocumentSymbols(handle: number, resource: UriComponents): Promise<DocumentSymbol[] | undefined>;
+    $provideWorkspaceSymbols(handle: number, query: string): PromiseLike<SymbolInformation[]>;
+    $resolveWorkspaceSymbol(handle: number, symbol: SymbolInformation): PromiseLike<SymbolInformation>;
+    $provideFoldingRange(
+        handle: number,
+        resource: UriComponents,
+        context: monaco.languages.FoldingContext
+    ): PromiseLike<monaco.languages.FoldingRange[] | undefined>;
+    $provideDocumentColors(handle: number, resource: UriComponents): PromiseLike<RawColorInfo[]>;
+    $provideColorPresentations(handle: number, resource: UriComponents, colorInfo: RawColorInfo): PromiseLike<ColorPresentation[]>;
+    $provideRenameEdits(handle: number, resource: UriComponents, position: Position, newName: string): PromiseLike<WorkspaceEditDto | undefined>;
+    $resolveRenameLocation(handle: number, resource: UriComponents, position: Position): PromiseLike<RenameLocation | undefined>;
 }
 
 export interface LanguagesMain {
@@ -717,16 +891,100 @@ export interface LanguagesMain {
     $setLanguageConfiguration(handle: number, languageId: string, configuration: SerializedLanguageConfiguration): void;
     $unregister(handle: number): void;
     $registerCompletionSupport(handle: number, selector: SerializedDocumentFilter[], triggerCharacters: string[], supportsResolveDetails: boolean): void;
+    $registerImplementationProvider(handle: number, selector: SerializedDocumentFilter[]): void;
+    $registerTypeDefinitionProvider(handle: number, selector: SerializedDocumentFilter[]): void;
     $registerDefinitionProvider(handle: number, selector: SerializedDocumentFilter[]): void;
+    $registeReferenceProvider(handle: number, selector: SerializedDocumentFilter[]): void;
     $registerSignatureHelpProvider(handle: number, selector: SerializedDocumentFilter[], triggerCharacters: string[]): void;
     $registerHoverProvider(handle: number, selector: SerializedDocumentFilter[]): void;
-
+    $registerDocumentHighlightProvider(handle: number, selector: SerializedDocumentFilter[]): void;
+    $registerQuickFixProvider(handle: number, selector: SerializedDocumentFilter[], codeActionKinds?: string[]): void;
     $clearDiagnostics(id: string): void;
     $changeDiagnostics(id: string, delta: [UriComponents, MarkerData[]][]): void;
     $registerDocumentFormattingSupport(handle: number, selector: SerializedDocumentFilter[]): void;
     $registerRangeFormattingProvider(handle: number, selector: SerializedDocumentFilter[]): void;
     $registerOnTypeFormattingProvider(handle: number, selector: SerializedDocumentFilter[], autoFormatTriggerCharacters: string[]): void;
     $registerDocumentLinkProvider(handle: number, selector: SerializedDocumentFilter[]): void;
+    $registerCodeLensSupport(handle: number, selector: SerializedDocumentFilter[], eventHandle?: number): void;
+    $emitCodeLensEvent(eventHandle: number, event?: any): void;
+    $registerOutlineSupport(handle: number, selector: SerializedDocumentFilter[]): void;
+    $registerWorkspaceSymbolProvider(handle: number): void;
+    $registerFoldingRangeProvider(handle: number, selector: SerializedDocumentFilter[]): void;
+    $registerDocumentColorProvider(handle: number, selector: SerializedDocumentFilter[]): void;
+    $registerRenameProvider(handle: number, selector: SerializedDocumentFilter[], supportsResoveInitialValues: boolean): void;
+}
+
+export interface WebviewPanelViewState {
+    readonly active: boolean;
+    readonly visible: boolean;
+    readonly position: number;
+}
+
+export interface WebviewsExt {
+    $onMessage(handle: string, message: any): void;
+    $onDidChangeWebviewPanelViewState(handle: string, newState: WebviewPanelViewState): void;
+    $onDidDisposeWebviewPanel(handle: string): PromiseLike<void>;
+    $deserializeWebviewPanel(newWebviewHandle: string,
+        viewType: string,
+        title: string,
+        state: any,
+        position: number,
+        options: theia.WebviewOptions & theia.WebviewPanelOptions): PromiseLike<void>;
+}
+
+export interface WebviewsMain {
+    $createWebviewPanel(handle: string,
+        viewType: string,
+        title: string,
+        showOptions: theia.WebviewPanelShowOptions,
+        options: theia.WebviewPanelOptions & theia.WebviewOptions | undefined,
+        pluginLocation: UriComponents): void;
+    $disposeWebview(handle: string): void;
+    $reveal(handle: string, showOptions: theia.WebviewPanelShowOptions): void;
+    $setTitle(handle: string, value: string): void;
+    $setIconPath(handle: string, value: { light: string, dark: string } | string | undefined): void;
+    $setHtml(handle: string, value: string): void;
+    $setOptions(handle: string, options: theia.WebviewOptions): void;
+    $postMessage(handle: string, value: any): Thenable<boolean>;
+
+    $registerSerializer(viewType: string): void;
+    $unregisterSerializer(viewType: string): void;
+}
+
+export interface StorageMain {
+    $set(key: string, value: KeysToAnyValues, isGlobal: boolean): Promise<boolean>;
+    $get(key: string, isGlobal: boolean): Promise<KeysToAnyValues>;
+    $getAll(isGlobal: boolean): Promise<KeysToKeysToAnyValue>;
+}
+
+export interface StorageExt {
+    $updatePluginsWorkspaceData(data: KeysToKeysToAnyValue): void;
+}
+
+export interface DebugExt {
+    $onSessionCustomEvent(sessionId: string, event: string, body?: any): void;
+    $breakpointsDidChange(all: Breakpoint[], added: Breakpoint[], removed: Breakpoint[], changed: Breakpoint[]): void;
+    $sessionDidCreate(sessionId: string): void;
+    $sessionDidDestroy(sessionId: string): void;
+    $sessionDidChange(sessionId: string | undefined): void;
+    $provideDebugConfigurations(debugType: string, workspaceFolder: string | undefined): Promise<theia.DebugConfiguration[]>;
+    $resolveDebugConfigurations(debugConfiguration: theia.DebugConfiguration, workspaceFolder: string | undefined): Promise<theia.DebugConfiguration | undefined>;
+    $getSupportedLanguages(debugType: string): Promise<string[]>;
+    $getSchemaAttributes(debugType: string): Promise<IJSONSchema[]>;
+    $getConfigurationSnippets(debugType: string): Promise<IJSONSchemaSnippet[]>;
+    $createDebugSession(debugConfiguration: theia.DebugConfiguration): Promise<string>;
+    $terminateDebugSession(sessionId: string): Promise<void>;
+}
+
+export interface DebugMain {
+    $appendToDebugConsole(value: string): Promise<void>;
+    $appendLineToDebugConsole(value: string): Promise<void>;
+    $registerDebuggerContribution(description: DebuggerDescription): Promise<void>;
+    $unregisterDebuggerConfiguration(debugType: string): Promise<void>;
+    $addBreakpoints(breakpoints: Breakpoint[]): Promise<void>;
+    $removeBreakpoints(breakpoints: Breakpoint[]): Promise<void>;
+    $startDebugging(folder: theia.WorkspaceFolder | undefined, nameOrConfiguration: string | theia.DebugConfiguration): Promise<boolean>;
+    $customRequest(sessionId: string, command: string, args?: any): Promise<DebugProtocol.Response>;
 }
 
 export const PLUGIN_RPC_CONTEXT = {
@@ -739,11 +997,18 @@ export const PLUGIN_RPC_CONTEXT = {
     DOCUMENTS_MAIN: createProxyIdentifier<DocumentsMain>('DocumentsMain'),
     STATUS_BAR_MESSAGE_REGISTRY_MAIN: <ProxyIdentifier<StatusBarMessageRegistryMain>>createProxyIdentifier<StatusBarMessageRegistryMain>('StatusBarMessageRegistryMain'),
     ENV_MAIN: createProxyIdentifier<EnvMain>('EnvMain'),
+    NOTIFICATION_MAIN: createProxyIdentifier<NotificationMain>('NotificationMain'),
     TERMINAL_MAIN: createProxyIdentifier<TerminalServiceMain>('TerminalServiceMain'),
     TREE_VIEWS_MAIN: createProxyIdentifier<TreeViewsMain>('TreeViewsMain'),
     PREFERENCE_REGISTRY_MAIN: createProxyIdentifier<PreferenceRegistryMain>('PreferenceRegistryMain'),
     OUTPUT_CHANNEL_REGISTRY_MAIN: <ProxyIdentifier<OutputChannelRegistryMain>>createProxyIdentifier<OutputChannelRegistryMain>('OutputChannelRegistryMain'),
     LANGUAGES_MAIN: createProxyIdentifier<LanguagesMain>('LanguagesMain'),
+    CONNECTION_MAIN: createProxyIdentifier<ConnectionMain>('ConnectionMain'),
+    WEBVIEWS_MAIN: createProxyIdentifier<WebviewsMain>('WebviewsMain'),
+    STORAGE_MAIN: createProxyIdentifier<StorageMain>('StorageMain'),
+    TASKS_MAIN: createProxyIdentifier<TasksMain>('TasksMain'),
+    LANGUAGES_CONTRIBUTION_MAIN: createProxyIdentifier<LanguagesContributionMain>('LanguagesContributionMain'),
+    DEBUG_MAIN: createProxyIdentifier<DebugMain>('DebugMain')
 };
 
 export const MAIN_RPC_CONTEXT = {
@@ -751,6 +1016,7 @@ export const MAIN_RPC_CONTEXT = {
     COMMAND_REGISTRY_EXT: createProxyIdentifier<CommandRegistryExt>('CommandRegistryExt'),
     QUICK_OPEN_EXT: createProxyIdentifier<QuickOpenExt>('QuickOpenExt'),
     WINDOW_STATE_EXT: createProxyIdentifier<WindowStateExt>('WindowStateExt'),
+    NOTIFICATION_EXT: createProxyIdentifier<NotificationExt>('NotificationExt'),
     WORKSPACE_EXT: createProxyIdentifier<WorkspaceExt>('WorkspaceExt'),
     TEXT_EDITORS_EXT: createProxyIdentifier<TextEditorsExt>('TextEditorsExt'),
     EDITORS_AND_DOCUMENTS_EXT: createProxyIdentifier<EditorsAndDocumentsExt>('EditorsAndDocumentsExt'),
@@ -759,4 +1025,29 @@ export const MAIN_RPC_CONTEXT = {
     TREE_VIEWS_EXT: createProxyIdentifier<TreeViewsExt>('TreeViewsExt'),
     PREFERENCE_REGISTRY_EXT: createProxyIdentifier<PreferenceRegistryExt>('PreferenceRegistryExt'),
     LANGUAGES_EXT: createProxyIdentifier<LanguagesExt>('LanguagesExt'),
+    CONNECTION_EXT: createProxyIdentifier<ConnectionExt>('ConnectionExt'),
+    WEBVIEWS_EXT: createProxyIdentifier<WebviewsExt>('WebviewsExt'),
+    STORAGE_EXT: createProxyIdentifier<StorageExt>('StorageExt'),
+    TASKS_EXT: createProxyIdentifier<TasksExt>('TasksExt'),
+    LANGUAGES_CONTRIBUTION_EXT: createProxyIdentifier<LanguagesContributionExt>('LanguagesContributionExt'),
+    DEBUG_EXT: createProxyIdentifier<DebugExt>('DebugExt')
 };
+
+export interface TasksExt {
+    $provideTasks(handle: number): Promise<TaskDto[] | undefined>;
+    $resolveTask(handle: number, task: TaskDto): Promise<TaskDto | undefined>;
+    $onDidStartTask(execution: TaskExecutionDto): void;
+    $onDidEndTask(id: number): void;
+}
+
+export interface TasksMain {
+    $registerTaskProvider(handle: number, type: string): void;
+    $taskExecutions(): Promise<TaskExecutionDto[]>;
+    $unregister(handle: number): void;
+    $terminateTask(id: number): void;
+}
+
+export interface RawColorInfo {
+    color: [number, number, number, number];
+    range: Range;
+}

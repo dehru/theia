@@ -14,9 +14,13 @@
  * SPDX-License-Identifier: EPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0
  ********************************************************************************/
 
-import { ContainerModule, decorate, injectable } from 'inversify';
+import '../../src/browser/style/index.css';
+import '../../src/browser/style/symbol-sprite.svg';
+import '../../src/browser/style/symbol-icons.css';
+
+import { ContainerModule, decorate, injectable, interfaces } from 'inversify';
 import { MenuContribution, CommandContribution } from '@theia/core/lib/common';
-import { QuickOpenService, FrontendApplicationContribution, KeybindingContribution } from '@theia/core/lib/browser';
+import { QuickOpenService, FrontendApplicationContribution, KeybindingContribution, PreferenceServiceImpl } from '@theia/core/lib/browser';
 import { Languages, Workspace } from '@theia/languages/lib/browser';
 import { TextEditorProvider, DiffNavigatorProvider } from '@theia/editor/lib/browser';
 import { StrictEditorTextFocusContext } from '@theia/editor/lib/browser/editor-keybinding-contexts';
@@ -40,19 +44,26 @@ import { MonacoDiffNavigatorFactory } from './monaco-diff-navigator-factory';
 import { MonacoStrictEditorTextFocusContext } from './monaco-keybinding-contexts';
 import { MonacoFrontendApplicationContribution } from './monaco-frontend-application-contribution';
 import MonacoTextmateModuleBinder from './textmate/monaco-textmate-frontend-bindings';
-import { QuickInputService } from './monaco-quick-input-service';
 import { MonacoSemanticHighlightingService } from './monaco-semantic-highlighting-service';
 import { SemanticHighlightingService } from '@theia/editor/lib/browser/semantic-highlight/semantic-highlighting-service';
 import { MonacoBulkEditService } from './monaco-bulk-edit-service';
+import { MonacoOutlineDecorator } from './monaco-outline-decorator';
+import { OutlineTreeDecorator } from '@theia/outline-view/lib/browser/outline-decorator-service';
+import { MonacoSnippetSuggestProvider } from './monaco-snippet-suggest-provider';
+import { ContextKeyService } from '@theia/core/lib/browser/context-key-service';
+import { MonacoContextKeyService } from './monaco-context-key-service';
+
+const deepmerge: (args: object[]) => object = require('deepmerge').default.all;
 
 decorate(injectable(), MonacoToProtocolConverter);
 decorate(injectable(), ProtocolToMonacoConverter);
-
-import '../../src/browser/style/index.css';
-import '../../src/browser/style/symbol-sprite.svg';
-import '../../src/browser/style/symbol-icons.css';
+decorate(injectable(), monaco.contextKeyService.ContextKeyService);
 
 export default new ContainerModule((bind, unbind, isBound, rebind) => {
+    bind(MonacoContextKeyService).toSelf().inSingletonScope();
+    rebind(ContextKeyService).toService(MonacoContextKeyService);
+
+    bind(MonacoSnippetSuggestProvider).toSelf().inSingletonScope();
     bind(FrontendApplicationContribution).to(MonacoFrontendApplicationContribution).inSingletonScope();
 
     bind(MonacoToProtocolConverter).toSelf().inSingletonScope();
@@ -65,6 +76,12 @@ export default new ContainerModule((bind, unbind, isBound, rebind) => {
     bind(MonacoWorkspace).toSelf().inSingletonScope();
     bind(Workspace).toService(MonacoWorkspace);
 
+    bind(MonacoConfigurationService).toDynamicValue(({ container }) =>
+        createMonacoConfigurationService(container)
+    ).inSingletonScope();
+    bind(monaco.contextKeyService.ContextKeyService).toDynamicValue(({ container }) =>
+        new monaco.contextKeyService.ContextKeyService(container.get(MonacoConfigurationService))
+    ).inSingletonScope();
     bind(MonacoBulkEditService).toSelf().inSingletonScope();
     bind(MonacoEditorService).toSelf().inSingletonScope();
     bind(MonacoTextModelService).toSelf().inSingletonScope();
@@ -81,7 +98,7 @@ export default new ContainerModule((bind, unbind, isBound, rebind) => {
     );
 
     bind(MonacoOutlineContribution).toSelf().inSingletonScope();
-    bind(FrontendApplicationContribution).toDynamicValue(ctx => ctx.container.get(MonacoOutlineContribution));
+    bind(FrontendApplicationContribution).toService(MonacoOutlineContribution);
 
     bind(MonacoStatusBarContribution).toSelf().inSingletonScope();
     bind(FrontendApplicationContribution).toService(MonacoStatusBarContribution);
@@ -93,14 +110,43 @@ export default new ContainerModule((bind, unbind, isBound, rebind) => {
     rebind(StrictEditorTextFocusContext).to(MonacoStrictEditorTextFocusContext).inSingletonScope();
 
     bind(MonacoQuickOpenService).toSelf().inSingletonScope();
-    rebind(QuickOpenService).toDynamicValue(ctx =>
-        ctx.container.get(MonacoQuickOpenService)
-    ).inSingletonScope();
+    rebind(QuickOpenService).toService(MonacoQuickOpenService);
 
     MonacoTextmateModuleBinder(bind, unbind, isBound, rebind);
 
-    bind(QuickInputService).toSelf().inSingletonScope();
-
     bind(MonacoSemanticHighlightingService).toSelf().inSingletonScope();
     rebind(SemanticHighlightingService).to(MonacoSemanticHighlightingService).inSingletonScope();
+
+    bind(MonacoOutlineDecorator).toSelf().inSingletonScope();
+    bind(OutlineTreeDecorator).toService(MonacoOutlineDecorator);
 });
+
+export const MonacoConfigurationService = Symbol('MonacoConfigurationService');
+export function createMonacoConfigurationService(container: interfaces.Container): monaco.services.IConfigurationService {
+    const configurations = container.get(MonacoConfigurations);
+    const preferences = container.get(PreferenceServiceImpl);
+    const service = monaco.services.StaticServices.configurationService.get();
+    const _configuration = service._configuration;
+
+    const getValue = _configuration.getValue.bind(_configuration);
+    _configuration.getValue = (section, overrides, workspace) => {
+        const preferenceConfig = configurations.getConfiguration();
+        if (section) {
+            const value = preferenceConfig.get(section);
+            return value !== undefined ? value : getValue(section, overrides, workspace);
+        }
+        const simpleConfig = getValue(section, overrides, workspace);
+        if (typeof simpleConfig === 'object') {
+            return deepmerge([{}, simpleConfig, preferenceConfig.toJSON()]);
+        }
+        return preferenceConfig.toJSON();
+    };
+
+    preferences.onPreferencesChanged(changes => {
+        const event = new monaco.services.ConfigurationChangeEvent();
+        event.change(Object.keys(changes));
+        service._onDidChangeConfiguration.fire(event);
+    });
+
+    return service;
+}

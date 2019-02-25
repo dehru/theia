@@ -15,14 +15,20 @@
  ********************************************************************************/
 import { injectable, inject } from 'inversify';
 import URI from '@theia/core/lib/common/uri';
-import { DisposableCollection, CommandRegistry, MenuModelRegistry } from '@theia/core';
-import { AbstractViewContribution, StatusBar, StatusBarAlignment, DiffUris, StatusBarEntry, FrontendApplicationContribution, FrontendApplication } from '@theia/core/lib/browser';
+import { DisposableCollection, CommandRegistry, MenuModelRegistry, CommandContribution, MenuContribution, Command } from '@theia/core';
+import {
+    AbstractViewContribution, StatusBar, StatusBarAlignment, DiffUris, StatusBarEntry,
+    FrontendApplicationContribution, FrontendApplication, Widget
+} from '@theia/core/lib/browser';
+import { TabBarToolbarContribution, TabBarToolbarRegistry } from '@theia/core/lib/browser/shell/tab-bar-toolbar';
 import { EditorManager, EditorWidget, EditorOpenerOptions, EditorContextMenu, EDITOR_CONTEXT_MENU } from '@theia/editor/lib/browser';
 import { GitFileChange, GitFileStatus } from '../common';
 import { GitWidget } from './git-widget';
 import { GitRepositoryTracker } from './git-repository-tracker';
-import { GitQuickOpenService } from './git-quick-open-service';
+import { GitQuickOpenService, GitAction } from './git-quick-open-service';
 import { GitSyncService } from './git-sync-service';
+import { WorkspaceService } from '@theia/workspace/lib/browser';
+import { GitPrompt } from '../common/git-prompt';
 
 export const GIT_WIDGET_FACTORY_ID = 'git';
 
@@ -37,13 +43,21 @@ export namespace GIT_COMMANDS {
         id: 'git.fetch',
         label: 'Git: Fetch...'
     };
+    export const PULL_DEFAULT = {
+        id: 'git.pull.default',
+        label: 'Git: Pull'
+    };
     export const PULL = {
         id: 'git.pull',
-        label: 'Git: Pull...'
+        label: 'Git: Pull from...'
+    };
+    export const PUSH_DEFAULT = {
+        id: 'git.push.default',
+        label: 'Git: Push'
     };
     export const PUSH = {
         id: 'git.push',
-        label: 'Git: Push...'
+        label: 'Git: Push to...'
     };
     export const MERGE = {
         id: 'git.merge',
@@ -63,13 +77,15 @@ export namespace GIT_COMMANDS {
         id: 'git.change.repository',
         label: 'Git: Change Repository...'
     };
-    export const OPEN_FILE = {
+    export const OPEN_FILE: Command = {
         id: 'git.open.file',
-        label: 'Git: Open File'
+        category: 'Git',
+        label: 'Open File'
     };
-    export const OPEN_CHANGES = {
+    export const OPEN_CHANGES: Command = {
         id: 'git.open.changes',
-        label: 'Git: Open Changes'
+        category: 'Git',
+        label: 'Open Changes'
     };
     export const SYNC = {
         id: 'git.sync',
@@ -79,10 +95,20 @@ export namespace GIT_COMMANDS {
         id: 'git.publish',
         label: 'Git: Publish Branch'
     };
+    export const STAGE_ALL = {
+        id: 'git.stage.all'
+    };
+    export const UNSTAGE_ALL = {
+        id: 'git.unstage.all'
+    };
+    export const DISCARD_ALL = {
+        id: 'git.discard.all'
+    };
 }
 
 @injectable()
-export class GitViewContribution extends AbstractViewContribution<GitWidget> implements FrontendApplicationContribution {
+export class GitViewContribution extends AbstractViewContribution<GitWidget>
+    implements FrontendApplicationContribution, CommandContribution, MenuContribution, TabBarToolbarContribution {
 
     static GIT_SELECTED_REPOSITORY = 'git-selected-repository';
     static GIT_REPOSITORY_STATUS = 'git-repository-status';
@@ -95,6 +121,8 @@ export class GitViewContribution extends AbstractViewContribution<GitWidget> imp
     @inject(GitQuickOpenService) protected readonly quickOpenService: GitQuickOpenService;
     @inject(GitRepositoryTracker) protected readonly repositoryTracker: GitRepositoryTracker;
     @inject(GitSyncService) protected readonly syncService: GitSyncService;
+    @inject(WorkspaceService) protected readonly workspaceService: WorkspaceService;
+    @inject(GitPrompt) protected readonly prompt: GitPrompt;
 
     constructor() {
         super({
@@ -136,7 +164,7 @@ export class GitViewContribution extends AbstractViewContribution<GitWidget> imp
         });
         this.repositoryTracker.onGitEvent(event => {
             const { status } = event;
-            const branch = status.branch ? status.branch : 'NO-HEAD';
+            const branch = status.branch ? status.branch : status.currentHead ? status.currentHead.substring(0, 8) : 'NO-HEAD';
             let dirty = '';
             if (status.changes.length > 0) {
                 const conflicts = this.hasConflicts(status.changes);
@@ -164,7 +192,7 @@ export class GitViewContribution extends AbstractViewContribution<GitWidget> imp
 
     registerMenus(menus: MenuModelRegistry): void {
         super.registerMenus(menus);
-        [GIT_COMMANDS.FETCH, GIT_COMMANDS.PULL, GIT_COMMANDS.PUSH, GIT_COMMANDS.MERGE].forEach(command =>
+        [GIT_COMMANDS.FETCH, GIT_COMMANDS.PULL_DEFAULT, GIT_COMMANDS.PULL, GIT_COMMANDS.PUSH_DEFAULT, GIT_COMMANDS.PUSH, GIT_COMMANDS.MERGE].forEach(command =>
             menus.registerMenuAction(GitWidget.ContextMenu.OTHER_GROUP, {
                 commandId: command.id,
                 label: command.label.slice('Git: '.length)
@@ -177,6 +205,18 @@ export class GitViewContribution extends AbstractViewContribution<GitWidget> imp
         menus.registerMenuAction(GitWidget.ContextMenu.COMMIT_GROUP, {
             commandId: GIT_COMMANDS.COMMIT_SIGN_OFF.id,
             label: 'Commit (Signed Off)'
+        });
+        menus.registerMenuAction(GitWidget.ContextMenu.BATCH, {
+            commandId: GIT_COMMANDS.STAGE_ALL.id,
+            label: 'Stage All Changes'
+        });
+        menus.registerMenuAction(GitWidget.ContextMenu.BATCH, {
+            commandId: GIT_COMMANDS.UNSTAGE_ALL.id,
+            label: 'Unstage All Changes'
+        });
+        menus.registerMenuAction(GitWidget.ContextMenu.BATCH, {
+            commandId: GIT_COMMANDS.DISCARD_ALL.id,
+            label: 'Discard All Changes'
         });
         menus.registerMenuAction(EditorContextMenu.NAVIGATION, {
             commandId: GIT_COMMANDS.OPEN_FILE.id
@@ -192,8 +232,16 @@ export class GitViewContribution extends AbstractViewContribution<GitWidget> imp
             execute: () => this.quickOpenService.fetch(),
             isEnabled: () => !!this.repositoryTracker.selectedRepository
         });
+        registry.registerCommand(GIT_COMMANDS.PULL_DEFAULT, {
+            execute: () => this.quickOpenService.performDefaultGitAction(GitAction.PULL),
+            isEnabled: () => !!this.repositoryTracker.selectedRepository
+        });
         registry.registerCommand(GIT_COMMANDS.PULL, {
             execute: () => this.quickOpenService.pull(),
+            isEnabled: () => !!this.repositoryTracker.selectedRepository
+        });
+        registry.registerCommand(GIT_COMMANDS.PUSH_DEFAULT, {
+            execute: () => this.quickOpenService.performDefaultGitAction(GitAction.PUSH),
             isEnabled: () => !!this.repositoryTracker.selectedRepository
         });
         registry.registerCommand(GIT_COMMANDS.PUSH, {
@@ -229,19 +277,46 @@ export class GitViewContribution extends AbstractViewContribution<GitWidget> imp
             },
             isEnabled: () => !!this.tryGetWidget() && !!this.repositoryTracker.selectedRepository
         });
+        registry.registerCommand(GIT_COMMANDS.STAGE_ALL, {
+            execute: async () => {
+                const widget = this.tryGetWidget();
+                if (!!widget) {
+                    widget.stageAll();
+                }
+            },
+            isEnabled: () => !!this.repositoryTracker.selectedRepository
+        });
+        registry.registerCommand(GIT_COMMANDS.UNSTAGE_ALL, {
+            execute: async () => {
+                const widget = this.tryGetWidget();
+                if (!!widget) {
+                    widget.unstageAll();
+                }
+            },
+            isEnabled: () => !!this.repositoryTracker.selectedRepository
+        });
+        registry.registerCommand(GIT_COMMANDS.DISCARD_ALL, {
+            execute: async () => {
+                const widget = this.tryGetWidget();
+                if (!!widget) {
+                    widget.discardAll();
+                }
+            },
+            isEnabled: () => !!this.repositoryTracker.selectedRepository
+        });
         registry.registerCommand(GIT_COMMANDS.CHANGE_REPOSITORY, {
             execute: () => this.quickOpenService.changeRepository(),
             isEnabled: () => this.hasMultipleRepositories()
         });
         registry.registerCommand(GIT_COMMANDS.OPEN_FILE, {
-            execute: () => this.openFile(),
-            isEnabled: () => !!this.openFileOptions,
-            isVisible: () => !!this.openFileOptions
+            execute: widget => this.openFile(widget),
+            isEnabled: widget => !!this.getOpenFileOptions(widget),
+            isVisible: widget => !!this.getOpenFileOptions(widget)
         });
         registry.registerCommand(GIT_COMMANDS.OPEN_CHANGES, {
-            execute: () => this.openChanges(),
-            isEnabled: () => !!this.openChangesOptions,
-            isVisible: () => !!this.openChangesOptions
+            execute: widget => this.openChanges(widget),
+            isEnabled: widget => !!this.getOpenChangesOptions(widget),
+            isVisible: widget => !!this.getOpenChangesOptions(widget)
         });
         registry.registerCommand(GIT_COMMANDS.SYNC, {
             execute: () => this.syncService.sync(),
@@ -254,8 +329,9 @@ export class GitViewContribution extends AbstractViewContribution<GitWidget> imp
             isVisible: () => this.syncService.canPublish()
         });
         registry.registerCommand(GIT_COMMANDS.CLONE, {
+            isEnabled: () => this.workspaceService.opened,
             // tslint:disable-next-line:no-any
-            execute: (args: any[]) => {
+            execute: (...args: any[]) => {
                 let url: string | undefined = undefined;
                 let folder: string | undefined = undefined;
                 let branch: string | undefined = undefined;
@@ -267,6 +343,21 @@ export class GitViewContribution extends AbstractViewContribution<GitWidget> imp
         });
     }
 
+    registerToolbarItems(registry: TabBarToolbarRegistry): void {
+        registry.registerItem({
+            id: GIT_COMMANDS.OPEN_FILE.id,
+            command: GIT_COMMANDS.OPEN_FILE.id,
+            text: '$(file-o)',
+            tooltip: GIT_COMMANDS.OPEN_FILE.label
+        });
+        registry.registerItem({
+            id: GIT_COMMANDS.OPEN_CHANGES.id,
+            command: GIT_COMMANDS.OPEN_CHANGES.id,
+            text: '$(files-o)',
+            tooltip: GIT_COMMANDS.OPEN_CHANGES.label
+        });
+    }
+
     protected hasConflicts(changes: GitFileChange[]): boolean {
         return changes.some(c => c.status === GitFileStatus.Conflicted);
     }
@@ -275,24 +366,24 @@ export class GitViewContribution extends AbstractViewContribution<GitWidget> imp
         return !changes.some(c => !c.staged);
     }
 
-    protected async openFile(): Promise<EditorWidget | undefined> {
-        const options = this.openFileOptions;
+    protected async openFile(widget?: Widget): Promise<EditorWidget | undefined> {
+        const options = this.getOpenFileOptions(widget);
         return options && this.editorManager.open(options.uri, options.options);
     }
 
-    protected get openFileOptions(): { uri: URI, options?: EditorOpenerOptions } | undefined {
-        const widget = this.editorManager.currentEditor;
-        if (widget && DiffUris.isDiffUri(widget.editor.uri)) {
-            const [, right] = DiffUris.decode(widget.editor.uri);
+    protected getOpenFileOptions(widget?: Widget): GitOpenFileOptions | undefined {
+        const ref = widget ? widget : this.editorManager.currentEditor;
+        if (ref instanceof EditorWidget && DiffUris.isDiffUri(ref.editor.uri)) {
+            const [, right] = DiffUris.decode(ref.editor.uri);
             const uri = right.withScheme('file');
-            const selection = widget.editor.selection;
-            return { uri, options: { selection } };
+            const selection = ref.editor.selection;
+            return { uri, options: { selection, widgetOptions: { ref } } };
         }
         return undefined;
     }
 
-    async openChanges(): Promise<EditorWidget | undefined> {
-        const options = this.openChangesOptions;
+    async openChanges(widget?: Widget): Promise<EditorWidget | undefined> {
+        const options = this.getOpenChangesOptions(widget);
         if (options) {
             const view = await this.widget;
             return view.openChange(options.change, options.options);
@@ -300,18 +391,18 @@ export class GitViewContribution extends AbstractViewContribution<GitWidget> imp
         return undefined;
     }
 
-    protected get openChangesOptions(): { change: GitFileChange, options?: EditorOpenerOptions } | undefined {
+    protected getOpenChangesOptions(widget?: Widget): GitOpenChangesOptions | undefined {
         const view = this.tryGetWidget();
         if (!view) {
             return undefined;
         }
-        const widget = this.editorManager.currentEditor;
-        if (widget && !DiffUris.isDiffUri(widget.editor.uri)) {
-            const uri = widget.editor.uri;
+        const ref = widget ? widget : this.editorManager.currentEditor;
+        if (ref instanceof EditorWidget && !DiffUris.isDiffUri(ref.editor.uri)) {
+            const uri = ref.editor.uri;
             const change = view.findChange(uri);
-            if (change) {
-                const selection = widget.editor.selection;
-                return { change, options: { selection } };
+            if (change && view.getUriToOpen(change).toString() !== uri.toString()) {
+                const selection = ref.editor.selection;
+                return { change, options: { selection, widgetOptions: { ref } } };
             }
         }
         return undefined;
@@ -347,7 +438,7 @@ export class GitViewContribution extends AbstractViewContribution<GitWidget> imp
         const { upstreamBranch, aheadBehind } = status;
         if (upstreamBranch) {
             return {
-                text: '$(refresh)' + (aheadBehind ? ` ${aheadBehind.behind}↓ ${aheadBehind.ahead}↑` : ''),
+                text: '$(refresh)' + (aheadBehind ? ` ${aheadBehind.behind} $(arrow-down) ${aheadBehind.ahead} $(arrow-up)` : ''),
                 command: GIT_COMMANDS.SYNC.id,
                 tooltip: 'Synchronize Changes'
             };
@@ -358,4 +449,12 @@ export class GitViewContribution extends AbstractViewContribution<GitWidget> imp
             tooltip: 'Publish Changes'
         };
     }
+}
+export interface GitOpenFileOptions {
+    readonly uri: URI
+    readonly options?: EditorOpenerOptions
+}
+export interface GitOpenChangesOptions {
+    readonly change: GitFileChange
+    readonly options?: EditorOpenerOptions
 }

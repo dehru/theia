@@ -28,6 +28,8 @@ import { DisposableCollection } from '@theia/core';
 import { DocumentsMainImpl } from './documents-main';
 import { TextEditorsMainImpl } from './text-editors-main';
 import { EditorManager } from '@theia/editor/lib/browser';
+import { OpenerService } from '@theia/core/lib/browser/opener-service';
+import { MonacoBulkEditService } from '@theia/monaco/lib/browser/monaco-bulk-edit-service';
 
 export class EditorsAndDocumentsMain {
     private toDispose = new DisposableCollection();
@@ -51,11 +53,13 @@ export class EditorsAndDocumentsMain {
         const editorService = container.get<TextEditorService>(TextEditorService);
         const modelService = container.get<EditorModelService>(EditorModelService);
         const editorManager = container.get<EditorManager>(EditorManager);
+        const openerService = container.get<OpenerService>(OpenerService);
+        const bulkEditService = container.get<MonacoBulkEditService>(MonacoBulkEditService);
 
-        const documentsMain = new DocumentsMainImpl(this, modelService, rpc, editorManager);
+        const documentsMain = new DocumentsMainImpl(this, modelService, rpc, editorManager, openerService);
         rpc.set(PLUGIN_RPC_CONTEXT.DOCUMENTS_MAIN, documentsMain);
 
-        const editorsMain = new TextEditorsMainImpl(this, rpc);
+        const editorsMain = new TextEditorsMainImpl(this, rpc, bulkEditService);
         rpc.set(PLUGIN_RPC_CONTEXT.TEXT_EDITORS_MAIN, editorsMain);
 
         this.stateComputer = new EditorAndDocumentStateComputer(d => this.onDelta(d), editorService, modelService);

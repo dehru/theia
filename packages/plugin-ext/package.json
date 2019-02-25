@@ -1,22 +1,29 @@
 {
   "name": "@theia/plugin-ext",
-  "version": "0.3.16",
+  "version": "0.3.19",
   "description": "Theia - Plugin Extension",
   "main": "lib/common/index.js",
   "typings": "lib/common/index.d.ts",
   "dependencies": {
-    "@theia/core": "^0.3.16",
-    "@theia/debug-nodejs": "^0.3.16",
-    "@theia/editor": "^0.3.16",
-    "@theia/filesystem": "^0.3.16",
-    "@theia/monaco": "^0.3.16",
-    "@theia/navigator": "^0.3.16",
-    "@theia/plugin": "^0.3.16",
-    "@theia/workspace": "^0.3.16",
+    "@theia/core": "^0.3.19",
+    "@theia/debug": "^0.3.19",
+    "@theia/editor": "^0.3.19",
+    "@theia/file-search": "^0.3.19",
+    "@theia/filesystem": "^0.3.19",
+    "@theia/messages": "^0.3.19",
+    "@theia/monaco": "^0.3.19",
+    "@theia/navigator": "^0.3.19",
+    "@theia/plugin": "^0.3.19",
+    "@theia/preferences": "^0.3.19",
+    "@theia/search-in-workspace": "^0.3.19",
+    "@theia/task": "^0.3.19",
+    "@theia/workspace": "^0.3.19",
     "decompress": "^4.2.0",
     "jsonc-parser": "^2.0.2",
     "lodash.clonedeep": "^4.5.0",
     "ps-tree": "1.1.0",
+    "uuid": "^3.2.1",
+    "vscode-debugprotocol": "^1.32.0",
     "vscode-uri": "^1.0.1"
   },
   "publishConfig": {
@@ -54,7 +61,7 @@
     "docs": "theiaext docs"
   },
   "devDependencies": {
-    "@theia/ext-scripts": "^0.3.16",
+    "@theia/ext-scripts": "^0.3.19",
     "@types/decompress": "^4.2.2",
     "@types/lodash.clonedeep": "^4.5.3"
   },

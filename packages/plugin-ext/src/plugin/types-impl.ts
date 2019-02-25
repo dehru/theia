@@ -14,12 +14,15 @@
  * SPDX-License-Identifier: EPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0
  ********************************************************************************/
 
+import { UUID } from '@phosphor/coreutils/lib/uuid';
 import { illegalArgument } from '../common/errors';
 import * as theia from '@theia/plugin';
+import * as crypto from 'crypto';
 import URI from 'vscode-uri';
 import { relative } from '../common/paths-util';
 import { startsWithIgnoreCase } from '../common/strings';
 import { MarkdownString, isMarkdownString } from './markdown-string';
+import { SymbolKind } from '../api/model';
 
 export class Disposable {
     private disposable: undefined | (() => void);
@@ -72,9 +75,16 @@ export enum TextEditorLineNumbersStyle {
  */
 export enum ViewColumn {
     Active = -1,
+    Beside = -2,
     One = 1,
     Two = 2,
-    Three = 3
+    Three = 3,
+    Four = 4,
+    Five = 5,
+    Six = 6,
+    Seven = 7,
+    Eight = 8,
+    Nine = 9
 }
 
 /**
@@ -568,8 +578,11 @@ export enum OverviewRulerLane {
 }
 
 export enum ConfigurationTarget {
-    User = 0,
-    Workspace = 1
+    Global = 1,
+    Workspace,
+    WorkspaceFolder,
+    Default,
+    Memory
 }
 
 export class RelativePattern {
@@ -653,7 +666,7 @@ export class TextEdit {
         if (!thing) {
             return false;
         }
-        return Range.isRange((<TextEdit>thing))
+        return Range.isRange((<TextEdit>thing).range)
             && typeof (<TextEdit>thing).newText === 'string';
     }
 
@@ -764,7 +777,7 @@ export class Location {
     uri: URI;
     range: Range;
 
-    constructor(uri: URI, rangeOrPosition: Range | Position) {
+    constructor(uri: URI, rangeOrPosition: Range | Position | undefined) {
         this.uri = uri;
         if (rangeOrPosition instanceof Range) {
             this.range = rangeOrPosition;
@@ -855,6 +868,26 @@ export class Hover {
     }
 }
 
+export enum DocumentHighlightKind {
+    Text = 0,
+    Read = 1,
+    Write = 2
+}
+
+export class DocumentHighlight {
+
+    public range: Range;
+    public kind?: DocumentHighlightKind;
+
+    constructor(
+        range: Range,
+        kind?: DocumentHighlightKind
+    ) {
+        this.range = range;
+        this.kind = kind;
+    }
+}
+
 export type Definition = Location | Location[];
 
 export class DocumentLink {
@@ -930,6 +963,8 @@ export class CodeAction {
 
     command?: theia.Command;
 
+    edit?: WorkspaceEdit;
+
     diagnostics?: Diagnostic[];
 
     kind?: CodeActionKind;
@@ -937,6 +972,137 @@ export class CodeAction {
     constructor(title: string, kind?: CodeActionKind) {
         this.title = title;
         this.kind = kind;
+    }
+}
+
+export interface FileOperationOptions {
+    overwrite?: boolean;
+    ignoreIfExists?: boolean;
+    ignoreIfNotExists?: boolean;
+    recursive?: boolean;
+}
+export interface FileOperation {
+    _type: 1;
+    from: URI | undefined;
+    to: URI | undefined;
+    options?: FileOperationOptions;
+}
+
+export interface FileTextEdit {
+    _type: 2;
+    uri: URI;
+    edit: TextEdit;
+}
+
+export class WorkspaceEdit implements theia.WorkspaceEdit {
+
+    private _edits = new Array<FileOperation | FileTextEdit | undefined>();
+
+    renameFile(from: theia.Uri, to: theia.Uri, options?: { overwrite?: boolean, ignoreIfExists?: boolean }): void {
+        this._edits.push({ _type: 1, from, to, options });
+    }
+
+    createFile(uri: theia.Uri, options?: { overwrite?: boolean, ignoreIfExists?: boolean }): void {
+        this._edits.push({ _type: 1, from: undefined, to: uri, options });
+    }
+
+    deleteFile(uri: theia.Uri, options?: { recursive?: boolean, ignoreIfNotExists?: boolean }): void {
+        this._edits.push({ _type: 1, from: uri, to: undefined, options });
+    }
+
+    replace(uri: URI, range: Range, newText: string): void {
+        this._edits.push({ _type: 2, uri, edit: new TextEdit(range, newText) });
+    }
+
+    insert(resource: URI, position: Position, newText: string): void {
+        this.replace(resource, new Range(position, position), newText);
+    }
+
+    delete(resource: URI, range: Range): void {
+        this.replace(resource, range, '');
+    }
+
+    has(uri: URI): boolean {
+        for (const edit of this._edits) {
+            if (edit && edit._type === 2 && edit.uri.toString() === uri.toString()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    set(uri: URI, edits: TextEdit[]): void {
+        if (!edits) {
+            // remove all text edits for `uri`
+            for (let i = 0; i < this._edits.length; i++) {
+                const element = this._edits[i];
+                if (element && element._type === 2 && element.uri.toString() === uri.toString()) {
+                    this._edits[i] = undefined;
+                }
+            }
+            this._edits = this._edits.filter(e => !!e);
+        } else {
+            // append edit to the end
+            for (const edit of edits) {
+                if (edit) {
+                    this._edits.push({ _type: 2, uri, edit });
+                }
+            }
+        }
+    }
+
+    get(uri: URI): TextEdit[] {
+        const res: TextEdit[] = [];
+        for (const candidate of this._edits) {
+            if (candidate && candidate._type === 2 && candidate.uri.toString() === uri.toString()) {
+                res.push(candidate.edit);
+            }
+        }
+        if (res.length === 0) {
+            return undefined!;
+        }
+        return res;
+    }
+
+    entries(): [URI, TextEdit[]][] {
+        const textEdits = new Map<string, [URI, TextEdit[]]>();
+        for (const candidate of this._edits) {
+            if (candidate && candidate._type === 2) {
+                let textEdit = textEdits.get(candidate.uri.toString());
+                if (!textEdit) {
+                    textEdit = [candidate.uri, []];
+                    textEdits.set(candidate.uri.toString(), textEdit);
+                }
+                textEdit[1].push(candidate.edit);
+            }
+        }
+        const result: [URI, TextEdit[]][] = [];
+        textEdits.forEach(v => result.push(v));
+        return result;
+    }
+
+    _allEntries(): ([URI, TextEdit[]] | [URI, URI, FileOperationOptions])[] {
+        const res: ([URI, TextEdit[]] | [URI, URI, FileOperationOptions])[] = [];
+        for (const edit of this._edits) {
+            if (!edit) {
+                continue;
+            }
+            if (edit._type === 1) {
+                res.push([edit.from!, edit.to!, edit.options!]);
+            } else {
+                res.push([edit.uri, [edit.edit]]);
+            }
+        }
+        return res;
+    }
+
+    get size(): number {
+        return this.entries().length;
+    }
+
+    // tslint:disable-next-line:no-any
+    toJSON(): any {
+        return this.entries();
     }
 }
 
@@ -954,45 +1120,23 @@ export class TreeItem {
 
     command?: theia.Command;
 
-    collapsibleState?: TreeItemCollapsibleState;
-
     contextValue?: string;
 
+    constructor(label: string, collapsibleState?: theia.TreeItemCollapsibleState)
+    constructor(resourceUri: URI, collapsibleState?: theia.TreeItemCollapsibleState)
+    constructor(arg1: string | URI, public collapsibleState: theia.TreeItemCollapsibleState = TreeItemCollapsibleState.None) {
+        if (arg1 instanceof URI) {
+            this.resourceUri = arg1;
+        } else {
+            this.label = arg1;
+        }
+    }
 }
 
 export enum TreeItemCollapsibleState {
     None = 0,
     Collapsed = 1,
     Expanded = 2
-}
-
-export enum SymbolKind {
-    File = 0,
-    Module = 1,
-    Namespace = 2,
-    Package = 3,
-    Class = 4,
-    Method = 5,
-    Property = 6,
-    Field = 7,
-    Constructor = 8,
-    Enum = 9,
-    Interface = 10,
-    Function = 11,
-    Variable = 12,
-    Constant = 13,
-    String = 14,
-    Number = 15,
-    Boolean = 16,
-    Array = 17,
-    Object = 18,
-    Key = 19,
-    Null = 20,
-    EnumMember = 21,
-    Struct = 22,
-    Event = 23,
-    Operator = 24,
-    TypeParameter = 25
 }
 
 export class SymbolInformation {
@@ -1072,14 +1216,596 @@ export class DocumentSymbol {
 }
 
 export enum FileChangeType {
-	Changed = 1,
-	Created = 2,
-	Deleted = 3,
+    Changed = 1,
+    Created = 2,
+    Deleted = 3,
 }
 
 export enum FileType {
-	Unknown = 0,
-	File = 1,
-	Directory = 2,
-	SymbolicLink = 64
+    Unknown = 0,
+    File = 1,
+    Directory = 2,
+    SymbolicLink = 64
+}
+
+export class ProgressOptions {
+    /**
+     * The location at which progress should show.
+     */
+    location: ProgressLocation;
+    /**
+     * A human-readable string which will be used to describe the
+     * operation.
+     */
+    title?: string;
+    /**
+     * Controls if a cancel button should show to allow the user to
+     * cancel the long running operation.  Note that currently only
+     * `ProgressLocation.Notification` is supporting to show a cancel
+     * button.
+     */
+    cancellable?: boolean;
+    constructor(location: ProgressLocation, title?: string, cancellable?: boolean) {
+        this.location = location;
+    }
+}
+export class Progress<T> {
+    /**
+     * Report a progress update.
+     * @param value A progress item, like a message and/or an
+     * report on how much work finished
+     */
+    report(value: T): void {
+    }
+}
+export enum ProgressLocation {
+    /**
+     * Show progress for the source control viewlet, as overlay for the icon and as progress bar
+     * inside the viewlet (when visible). Neither supports cancellation nor discrete progress.
+     */
+    SourceControl = 1,
+    /**
+     * Show progress in the status bar of the editor. Neither supports cancellation nor discrete progress.
+     */
+    Window = 10,
+    /**
+     * Show progress as notification with an optional cancel button. Supports to show infinite and discrete progress.
+     */
+    Notification = 15
+}
+
+export class ProcessExecution {
+    private executionProcess: string;
+    private arguments: string[];
+    private executionOptions: theia.ProcessExecutionOptions | undefined;
+
+    constructor(process: string, options?: theia.ProcessExecutionOptions);
+    constructor(process: string, args: string[], options?: theia.ProcessExecutionOptions);
+    constructor(process: string, varg1?: string[] | theia.ProcessExecutionOptions, varg2?: theia.ProcessExecutionOptions) {
+        if (typeof process !== 'string') {
+            throw illegalArgument('process');
+        }
+        this.executionProcess = process;
+        if (varg1 !== undefined) {
+            if (Array.isArray(varg1)) {
+                this.arguments = varg1;
+                this.executionOptions = varg2;
+            } else {
+                this.executionOptions = varg1;
+            }
+        }
+        if (this.arguments === undefined) {
+            this.arguments = [];
+        }
+    }
+
+    get process(): string {
+        return this.executionProcess;
+    }
+
+    set process(value: string) {
+        if (typeof value !== 'string') {
+            throw illegalArgument('process');
+        }
+        this.executionProcess = value;
+    }
+
+    get args(): string[] {
+        return this.arguments;
+    }
+
+    set args(value: string[]) {
+        if (!Array.isArray(value)) {
+            value = [];
+        }
+        this.arguments = value;
+    }
+
+    get options(): theia.ProcessExecutionOptions | undefined {
+        return this.executionOptions;
+    }
+
+    set options(value: theia.ProcessExecutionOptions | undefined) {
+        this.executionOptions = value;
+    }
+
+    public computeId(): string {
+        const hash = crypto.createHash('md5');
+        hash.update('process');
+        if (this.executionProcess !== undefined) {
+            hash.update(this.executionProcess);
+        }
+        if (this.arguments && this.arguments.length > 0) {
+            for (const arg of this.arguments) {
+                hash.update(arg);
+            }
+        }
+        return hash.digest('hex');
+    }
+}
+
+export enum ShellQuoting {
+    Escape = 1,
+    Strong = 2,
+    Weak = 3
+}
+
+export enum TaskPanelKind {
+    Shared = 1,
+    Dedicated = 2,
+    New = 3
+}
+
+export enum TaskRevealKind {
+    Always = 1,
+    Silent = 2,
+    Never = 3
+}
+
+export class ShellExecution {
+    private shellCommandLine: string;
+    private shellCommand: string | theia.ShellQuotedString;
+    private arguments: (string | theia.ShellQuotedString)[];
+    private shellOptions: theia.ShellExecutionOptions | undefined;
+
+    constructor(commandLine: string, options?: theia.ShellExecutionOptions);
+    constructor(command: string | theia.ShellQuotedString, args: (string | theia.ShellQuotedString)[], options?: theia.ShellExecutionOptions);
+
+    constructor(arg0: string | theia.ShellQuotedString, arg1?: theia.ShellExecutionOptions | (string | theia.ShellQuotedString)[], arg2?: theia.ShellExecutionOptions) {
+        if (Array.isArray(arg1) || typeof arg1 === 'string') {
+            if (!arg0) {
+                throw illegalArgument('command can\'t be undefined or null');
+            }
+            if (typeof arg0 !== 'string' && typeof arg0.value !== 'string') {
+                throw illegalArgument('command');
+            }
+            this.shellCommand = arg0;
+            this.arguments = arg1 as (string | theia.ShellQuotedString)[];
+            this.shellOptions = arg2;
+        } else {
+            if (typeof arg0 !== 'string') {
+                throw illegalArgument('commandLine');
+            }
+            this.shellCommandLine = arg0;
+            this.shellOptions = arg1;
+        }
+    }
+
+    get commandLine(): string {
+        return this.shellCommandLine;
+    }
+
+    set commandLine(value: string) {
+        if (typeof value !== 'string') {
+            throw illegalArgument('commandLine');
+        }
+        this.shellCommandLine = value;
+    }
+
+    get command(): string | theia.ShellQuotedString {
+        return this.shellCommand;
+    }
+
+    set command(value: string | theia.ShellQuotedString) {
+        if (typeof value !== 'string' && typeof value.value !== 'string') {
+            throw illegalArgument('command');
+        }
+        this.shellCommand = value;
+    }
+
+    get args(): (string | theia.ShellQuotedString)[] {
+        return this.arguments;
+    }
+
+    set args(value: (string | theia.ShellQuotedString)[]) {
+        this.arguments = value || [];
+    }
+
+    get options(): theia.ShellExecutionOptions | undefined {
+        return this.shellOptions;
+    }
+
+    set options(value: theia.ShellExecutionOptions | undefined) {
+        this.shellOptions = value;
+    }
+
+    public computeId(): string {
+        const hash = crypto.createHash('md5');
+        hash.update('shell');
+        if (this.shellCommandLine !== undefined) {
+            hash.update(this.shellCommandLine);
+        }
+        if (this.shellCommand !== undefined) {
+            hash.update(typeof this.shellCommand === 'string' ? this.shellCommand : this.shellCommand.value);
+        }
+        if (this.arguments && this.arguments.length > 0) {
+            for (const arg of this.arguments) {
+                hash.update(typeof arg === 'string' ? arg : arg.value);
+            }
+        }
+        return hash.digest('hex');
+    }
+}
+
+export class TaskGroup {
+    private groupId: string;
+
+    public static Clean: TaskGroup = new TaskGroup('clean', 'Clean');
+    public static Build: TaskGroup = new TaskGroup('build', 'Build');
+    public static Rebuild: TaskGroup = new TaskGroup('rebuild', 'Rebuild');
+    public static Test: TaskGroup = new TaskGroup('test', 'Test');
+
+    public static from(value: string) {
+        switch (value) {
+            case 'clean':
+                return TaskGroup.Clean;
+            case 'build':
+                return TaskGroup.Build;
+            case 'rebuild':
+                return TaskGroup.Rebuild;
+            case 'test':
+                return TaskGroup.Test;
+            default:
+                return undefined;
+        }
+    }
+
+    constructor(id: string, label: string) {
+        if (typeof id !== 'string') {
+            throw illegalArgument('id');
+        }
+        if (typeof label !== 'string') {
+            throw illegalArgument('name');
+        }
+        this.groupId = id;
+    }
+
+    get id(): string {
+        return this.groupId;
+    }
+}
+
+export enum TaskScope {
+    Global = 1,
+    Workspace = 2
+}
+
+export class Task {
+    private taskDefinition: theia.TaskDefinition | undefined;
+    private taskScope: theia.TaskScope.Global | theia.TaskScope.Workspace | theia.WorkspaceFolder | undefined;
+    private taskName: string;
+    private taskExecution: ProcessExecution | ShellExecution | undefined;
+    private taskProblemMatchers: string[];
+    private hasTaskProblemMatchers: boolean;
+    private isTaskBackground: boolean;
+    private taskSource: string;
+    private taskGroup: TaskGroup | undefined;
+    private taskPresentationOptions: theia.TaskPresentationOptions | undefined;
+
+    constructor(taskDefinition: theia.TaskDefinition,
+        scope: theia.WorkspaceFolder | theia.TaskScope.Global | theia.TaskScope.Workspace,
+        name: string,
+        source: string,
+        execution?: ProcessExecution | ShellExecution,
+        problemMatchers?: string | string[]) {
+
+        this.definition = taskDefinition;
+        this.scope = scope;
+        this.name = name;
+        this.source = source;
+        this.execution = execution;
+
+        if (typeof problemMatchers === 'string') {
+            this.taskProblemMatchers = [problemMatchers];
+            this.hasTaskProblemMatchers = true;
+        } else if (Array.isArray(problemMatchers)) {
+            this.taskProblemMatchers = problemMatchers;
+            this.hasTaskProblemMatchers = true;
+        } else {
+            this.taskProblemMatchers = [];
+            this.hasTaskProblemMatchers = false;
+        }
+        this.isTaskBackground = false;
+    }
+
+    get definition(): theia.TaskDefinition | undefined {
+        return this.taskDefinition;
+    }
+
+    set definition(value: theia.TaskDefinition | undefined) {
+        if (value === undefined || value === null) {
+            throw illegalArgument('Kind can\'t be undefined or null');
+        }
+        this.taskDefinition = value;
+    }
+
+    get scope(): theia.TaskScope.Global | theia.TaskScope.Workspace | theia.WorkspaceFolder | undefined {
+        return this.taskScope;
+    }
+
+    set scope(value: theia.TaskScope.Global | theia.TaskScope.Workspace | theia.WorkspaceFolder | undefined) {
+        this.taskScope = value;
+    }
+
+    get name(): string {
+        return this.taskName;
+    }
+
+    set name(value: string) {
+        if (typeof value !== 'string') {
+            throw illegalArgument('name');
+        }
+        this.taskName = value;
+    }
+
+    get execution(): ProcessExecution | ShellExecution | undefined {
+        return this.taskExecution;
+    }
+
+    set execution(value: ProcessExecution | ShellExecution | undefined) {
+        if (value === null) {
+            value = undefined;
+        }
+        this.taskExecution = value;
+        this.updateDefinitionBasedOnExecution();
+    }
+
+    get problemMatchers(): string[] {
+        return this.taskProblemMatchers;
+    }
+
+    set problemMatchers(value: string[]) {
+        if (!Array.isArray(value)) {
+            this.taskProblemMatchers = [];
+            this.hasTaskProblemMatchers = false;
+            return;
+        }
+        this.taskProblemMatchers = value;
+        this.hasTaskProblemMatchers = true;
+    }
+
+    get hasProblemMatchers(): boolean {
+        return this.hasTaskProblemMatchers;
+    }
+
+    get isBackground(): boolean {
+        return this.isTaskBackground;
+    }
+
+    set isBackground(value: boolean) {
+        if (value !== true && value !== false) {
+            value = false;
+        }
+        this.isTaskBackground = value;
+    }
+
+    get source(): string {
+        return this.taskSource;
+    }
+
+    set source(value: string) {
+        if (typeof value !== 'string' || value.length === 0) {
+            throw illegalArgument('source must be a string of length > 0');
+        }
+        this.taskSource = value;
+    }
+
+    get group(): TaskGroup | undefined {
+        return this.taskGroup;
+    }
+
+    set group(value: TaskGroup | undefined) {
+        if (value === undefined || value === null) {
+            this.taskGroup = undefined;
+            return;
+        }
+        this.taskGroup = value;
+    }
+
+    get presentationOptions(): theia.TaskPresentationOptions | undefined {
+        return this.taskPresentationOptions;
+    }
+
+    set presentationOptions(value: theia.TaskPresentationOptions | undefined) {
+        if (value === null) {
+            value = undefined;
+        }
+        this.taskPresentationOptions = value;
+    }
+
+    private updateDefinitionBasedOnExecution(): void {
+        this.taskDefinition = undefined;
+        if (this.taskExecution instanceof ProcessExecution) {
+            this.taskDefinition = {
+                type: 'process',
+                id: this.taskExecution.computeId()
+            };
+        } else if (this.taskExecution instanceof ShellExecution) {
+            this.taskDefinition = {
+                type: 'shell',
+                id: this.taskExecution.computeId()
+            };
+        }
+    }
+}
+
+/**
+ * The base class of all breakpoint types.
+ */
+export class Breakpoint {
+    /**
+     * Is breakpoint enabled.
+     */
+    enabled: boolean;
+    /**
+     * An optional expression for conditional breakpoints.
+     */
+    condition?: string;
+    /**
+     * An optional expression that controls how many hits of the breakpoint are ignored.
+     */
+    hitCondition?: string;
+    /**
+     * An optional message that gets logged when this breakpoint is hit. Embedded expressions within {} are interpolated by the debug adapter.
+     */
+    logMessage?: string;
+
+    protected constructor(enabled?: boolean, condition?: string, hitCondition?: string, logMessage?: string) {
+        this.enabled = enabled || false;
+        this.condition = condition;
+        this.hitCondition = hitCondition;
+        this.logMessage = logMessage;
+    }
+
+    private _id: string | undefined;
+    /**
+     * The unique ID of the breakpoint.
+     */
+    get id(): string {
+        if (!this._id) {
+            this._id = UUID.uuid4();
+        }
+        return this._id;
+    }
+
+}
+
+/**
+ * A breakpoint specified by a source location.
+ */
+export class SourceBreakpoint extends Breakpoint {
+    /**
+     * The source and line position of this breakpoint.
+     */
+    location: Location;
+
+    /**
+     * Create a new breakpoint for a source location.
+     */
+    constructor(location: Location, enabled?: boolean, condition?: string, hitCondition?: string, logMessage?: string) {
+        super(enabled, condition, hitCondition, logMessage);
+        this.location = location;
+    }
+}
+
+/**
+ * A breakpoint specified by a function name.
+ */
+export class FunctionBreakpoint extends Breakpoint {
+    /**
+     * The name of the function to which this breakpoint is attached.
+     */
+    functionName: string;
+
+    /**
+     * Create a new function breakpoint.
+     */
+    constructor(functionName: string, enabled?: boolean, condition?: string, hitCondition?: string, logMessage?: string) {
+        super(enabled, condition, hitCondition, logMessage);
+        this.functionName = functionName;
+    }
+}
+
+export class Color {
+    readonly red: number;
+    readonly green: number;
+    readonly blue: number;
+    readonly alpha: number;
+
+    constructor(red: number, green: number, blue: number, alpha: number) {
+        this.red = red;
+        this.green = green;
+        this.blue = blue;
+        this.alpha = alpha;
+    }
+}
+
+export class ColorInformation {
+    range: Range;
+    color: Color;
+
+    constructor(range: Range, color: Color) {
+        if (color && !(color instanceof Color)) {
+            throw illegalArgument('color');
+        }
+        if (!Range.isRange(range)) {
+            throw illegalArgument('range');
+        }
+        this.range = range;
+        this.color = color;
+    }
+}
+
+export class ColorPresentation {
+    label: string;
+    textEdit?: TextEdit;
+    additionalTextEdits?: TextEdit[];
+
+    constructor(label: string) {
+        if (!label || typeof label !== 'string') {
+            throw illegalArgument('label');
+        }
+        this.label = label;
+    }
+}
+
+export enum ColorFormat {
+    RGB = 0,
+    HEX = 1,
+    HSL = 2
+}
+
+export class FoldingRange {
+    start: number;
+    end: number;
+    kind?: FoldingRangeKind;
+
+    constructor(start: number, end: number, kind?: FoldingRangeKind) {
+        this.start = start;
+        this.end = end;
+        this.kind = kind;
+    }
+}
+
+export enum FoldingRangeKind {
+    Comment = 1,
+    Imports = 2,
+    Region = 3
+}
+
+/**
+ * Enumeration of the supported operating systems.
+ */
+export enum OperatingSystem {
+    Windows = 'Windows',
+    Linux = 'Linux',
+    OSX = 'OSX'
+}
+
+/** The areas of the application shell where webview panel can reside. */
+export enum WebviewPanelTargetArea {
+    Main = 'main',
+    Left = 'left',
+    Right = 'right',
+    Bottom = 'bottom'
 }

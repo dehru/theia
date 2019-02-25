@@ -30,8 +30,9 @@ import { GitAvatarService } from './git-avatar-service';
 import { GitCommitDetailUri, GitCommitDetailOpenerOptions, GitCommitDetailOpenHandler } from './git-commit-detail-open-handler';
 import { GitCommitDetails } from './git-commit-detail-widget';
 import { GitNavigableListWidget } from '../git-navigable-list-widget';
-import { GitFileChangeNode } from '../git-widget';
+import { GitFileChangeNode } from '../git-file-change-node';
 import * as React from 'react';
+import { AlertMessage } from '@theia/core/lib/browser/widgets/alert-message';
 
 export interface GitCommitNode extends GitCommitDetails {
     fileChanges?: GitFileChange[];
@@ -124,18 +125,15 @@ export class GitHistoryWidget extends GitNavigableListWidget<GitHistoryListNode>
     protected async addCommits(options?: Git.Options.Log): Promise<void> {
         let repository: Repository | undefined;
         repository = this.repositoryProvider.findRepositoryOrSelected(options);
-        let resolver: () => void;
+
         this.errorMessage = undefined;
         this.cancelIndicator.cancel();
         this.cancelIndicator = new CancellationTokenSource();
         const token = this.cancelIndicator.token;
+
         if (repository) {
-            const log = this.git.log(repository, options);
-            log.catch((reason: Error) => {
-                this.errorMessage = reason.message;
-                resolver();
-            });
-            log.then(async changes => {
+            try {
+                let changes = await this.git.log(repository, options);
                 if (token.isCancellationRequested || !this.hasMoreCommits) {
                     return;
                 }
@@ -172,16 +170,15 @@ export class GitHistoryWidget extends GitNavigableListWidget<GitHistoryListNode>
                         this.errorMessage = <React.Fragment>It is not under version control.</React.Fragment>;
                     }
                 }
-                resolver();
-            });
+
+            } catch (error) {
+                this.errorMessage = error.message;
+            }
+
         } else {
-            setTimeout(() => {
-                this.commits = [];
-                this.errorMessage = <React.Fragment>There is no repository selected in this workspace.</React.Fragment>;
-                resolver();
-            });
+            this.commits = [];
+            this.errorMessage = <React.Fragment>There is no repository selected in this workspace.</React.Fragment>;
         }
-        return new Promise<void>(resolve => resolver = resolve);
     }
 
     protected async addOrRemoveFileChangeNodes(commit: GitCommitNode) {
@@ -254,14 +251,13 @@ export class GitHistoryWidget extends GitNavigableListWidget<GitHistoryListNode>
                 const relPath = this.relativePath(this.options.uri);
                 const repo = this.repositoryProvider.findRepository(new URI(this.options.uri));
                 const repoName = repo ? ` in ${new URI(repo.localUri).displayName}` : '';
-                path = <React.Fragment> for <i>/{decodeURIComponent(relPath)}</i>{repoName}</React.Fragment>;
+                path = ` for ${decodeURIComponent(relPath)}${repoName}`;
             }
-            content = <div className='message-container'>
-                <div className='no-history-message'>
-                    <div>There is no Git history available{path}.</div>
-                    <div>{reason}</div>
-                </div>
-            </div>;
+            content = <AlertMessage
+                type='WARNING'
+                header={`There is no Git history available${path}`}>
+                {reason}
+            </AlertMessage>;
         } else {
             content = <div className='spinnerContainer'>
                 <span className='fa fa-spinner fa-pulse fa-3x fa-fw'></span>

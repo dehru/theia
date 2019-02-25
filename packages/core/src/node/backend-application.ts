@@ -18,7 +18,6 @@ import * as http from 'http';
 import * as https from 'https';
 import * as express from 'express';
 import * as yargs from 'yargs';
-import * as path from 'path';
 import * as fs from 'fs-extra';
 import { inject, named, injectable } from 'inversify';
 import { ILogger, ContributionProvider, MaybePromise } from '../common';
@@ -57,7 +56,7 @@ export class BackendApplicationCliContribution implements CliContribution {
 
     configure(conf: yargs.Argv): void {
         conf.option('port', { alias: 'p', description: 'The port the backend server listens on.', type: 'number', default: defaultPort });
-        conf.option('hostname', { description: 'The allowed hostname for connections.', type: 'string', default: defaultHost });
+        conf.option('hostname', { alias: 'h', description: 'The allowed hostname for connections.', type: 'string', default: defaultHost });
         conf.option('ssl', { description: 'Use SSL (HTTPS), cert and certkey must also be set', type: 'boolean', default: defaultSSL });
         conf.option('cert', { description: 'Path to SSL certificate.', type: 'string' });
         conf.option('certkey', { description: 'Path to SSL certificate key.', type: 'string' });
@@ -74,13 +73,13 @@ export class BackendApplicationCliContribution implements CliContribution {
     }
 
     protected appProjectPath(): string {
-        const cwd = process.cwd();
-        // Check whether we are in bundled application or development mode.
-        // In a bundled electron application, the `package.json` is in `resources/app` by default.
-        if (environment.electron.is() && !environment.electron.isDevMode()) {
-            return path.join(cwd, 'resources', 'app');
+        if (environment.electron.is()) {
+            if (process.env.THEIA_APP_PROJECT_PATH) {
+                return process.env.THEIA_APP_PROJECT_PATH;
+            }
+            throw new Error('The \'THEIA_APP_PROJECT_PATH\' environment variable must be set when running in electron.');
         }
-        return cwd;
+        return process.cwd();
     }
 
 }

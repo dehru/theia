@@ -20,7 +20,7 @@ import { LabelProvider } from '@theia/core/lib/browser';
 import { Git, GitFileChange } from '../../common';
 import { GitDiffWidget } from '../diff/git-diff-widget';
 import { GitRepositoryProvider } from '../git-repository-provider';
-import { GitFileChangeNode } from '../git-widget';
+import { GitFileChangeNode } from '../git-file-change-node';
 import * as React from 'react';
 
 export const GIT_COMMIT_DETAIL = 'git-commit-detail-widget';
@@ -67,7 +67,7 @@ export class GitCommitDetailWidget extends GitDiffWidget {
         const mail = <div className='mail header-value noWrapInfo'>{`<${authorEMail}>`}</div>;
         const authorRow = <div className='header-row noWrapInfo'><div className='theia-header'>author: </div>{author}</div>;
         const mailRow = <div className='header-row noWrapInfo'><div className='theia-header'>e-mail: </div>{mail}</div>;
-        const authorDate = this.commitDetailOptions.authorDate;
+        const authorDate = new Date(this.commitDetailOptions.authorDate);
         const dateStr = authorDate.toLocaleDateString('en', {
             month: 'short',
             day: 'numeric',

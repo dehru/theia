@@ -15,11 +15,13 @@
  ********************************************************************************/
 
 import { injectable } from 'inversify';
-import { BaseLanguageServerContribution, IConnection } from '@theia/languages/lib/node';
+import { BaseLanguageServerContribution, IConnection, LanguageServerStartOptions } from '@theia/languages/lib/node';
 import { parseArgs } from '@theia/process/lib/node/utils';
-import { CPP_LANGUAGE_ID, CPP_LANGUAGE_NAME } from '../common';
+import { CPP_LANGUAGE_ID, CPP_LANGUAGE_NAME, CLANGD_EXECUTABLE_DEFAULT, CppStartParameters } from '../common';
 
-export const CLANGD_COMMAND_DEFAULT = 'clangd';
+export interface CppStartOptions extends LanguageServerStartOptions {
+    parameters?: CppStartParameters
+}
 
 @injectable()
 export class CppContribution extends BaseLanguageServerContribution {
@@ -27,17 +29,20 @@ export class CppContribution extends BaseLanguageServerContribution {
     readonly id = CPP_LANGUAGE_ID;
     readonly name = CPP_LANGUAGE_NAME;
 
-    public start(clientConnection: IConnection): void {
-        const envCommand = process.env.CPP_CLANGD_COMMAND;
-        const command = envCommand ? envCommand : CLANGD_COMMAND_DEFAULT;
+    async start(clientConnection: IConnection, { parameters }: CppStartOptions): Promise<void> {
 
-        const envArgs = process.env.CPP_CLANGD_ARGS;
-        let args: string[] = [];
-        if (envArgs) {
-            args = parseArgs(envArgs);
-        }
+        const command =
+            process.env.CPP_CLANGD_COMMAND
+            || (parameters && parameters.clangdExecutable)
+            || CLANGD_EXECUTABLE_DEFAULT;
 
-        const serverConnection = this.createProcessStreamConnection(command, args);
+        const args = parseArgs(
+            process.env.CPP_CLANGD_ARGS
+            || (parameters && parameters.clangdArgs)
+            || undefined
+        );
+
+        const serverConnection = await this.createProcessStreamConnectionAsync(command, args);
         this.forward(clientConnection, serverConnection);
     }
 }

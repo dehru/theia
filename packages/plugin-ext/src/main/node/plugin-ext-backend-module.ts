@@ -17,6 +17,7 @@
 import { interfaces } from 'inversify';
 import { PluginApiContribution } from './plugin-service';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
+import { PluginsKeyValueStorage } from './plugins-key-value-storage';
 import { PluginDeployerContribution } from './plugin-deployer-contribution';
 import {
     PluginDeployer, PluginDeployerResolver, PluginDeployerFileHandler,
@@ -29,14 +30,17 @@ import { PluginTheiaDirectoryHandler } from './handlers/plugin-theia-directory-h
 import { GithubPluginDeployerResolver } from './plugin-github-resolver';
 import { HttpPluginDeployerResolver } from './plugin-http-resolver';
 import { ConnectionHandler, JsonRpcConnectionHandler } from '@theia/core';
+import { PluginPathsService, pluginPathsServicePath } from '../common/plugin-paths-protocol';
+import { PluginPathsServiceImpl } from './paths/plugin-paths-service';
+import { PluginServerHandler } from './plugin-server-handler';
 
 export function bindMainBackend(bind: interfaces.Bind): void {
     bind(PluginApiContribution).toSelf().inSingletonScope();
-    bind(BackendApplicationContribution).toDynamicValue(ctx => ctx.container.get(PluginApiContribution)).inSingletonScope();
+    bind(BackendApplicationContribution).toService(PluginApiContribution);
 
     bind(PluginDeployer).to(PluginDeployerImpl).inSingletonScope();
     bind(PluginDeployerContribution).toSelf().inSingletonScope();
-    bind(BackendApplicationContribution).toDynamicValue(ctx => ctx.container.get(PluginDeployerContribution)).inSingletonScope();
+    bind(BackendApplicationContribution).toService(PluginDeployerContribution);
 
     bind(PluginDeployerResolver).to(LocalDirectoryPluginDeployerResolver).inSingletonScope();
     bind(PluginDeployerResolver).to(GithubPluginDeployerResolver).inSingletonScope();
@@ -45,7 +49,16 @@ export function bindMainBackend(bind: interfaces.Bind): void {
     bind(PluginDeployerFileHandler).to(PluginTheiaFileHandler).inSingletonScope();
     bind(PluginDeployerDirectoryHandler).to(PluginTheiaDirectoryHandler).inSingletonScope();
 
-    bind(PluginServer).to(PluginDeployerImpl).inSingletonScope();
+    bind(PluginServer).to(PluginServerHandler).inSingletonScope();
+
+    bind(PluginsKeyValueStorage).toSelf().inSingletonScope();
+
+    bind(PluginPathsService).to(PluginPathsServiceImpl).inSingletonScope();
+    bind(ConnectionHandler).toDynamicValue(ctx =>
+        new JsonRpcConnectionHandler(pluginPathsServicePath, () =>
+            ctx.container.get(PluginPathsService)
+        )
+    ).inSingletonScope();
 
     bind(ConnectionHandler).toDynamicValue(ctx =>
         new JsonRpcConnectionHandler(pluginServerJsonRpcPath, () =>

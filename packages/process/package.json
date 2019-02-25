@@ -1,10 +1,10 @@
 {
   "name": "@theia/process",
-  "version": "0.3.16",
+  "version": "0.3.19",
   "description": "Theia process support.",
   "dependencies": {
-    "@theia/core": "^0.3.16",
-    "node-pty": "0.7.6",
+    "@theia/core": "^0.3.19",
+    "@theia/node-pty": "0.7.8-theia004",
     "string-argv": "^0.1.1"
   },
   "publishConfig": {
@@ -40,7 +40,7 @@
     "docs": "theiaext docs"
   },
   "devDependencies": {
-    "@theia/ext-scripts": "^0.3.16"
+    "@theia/ext-scripts": "^0.3.19"
   },
   "nyc": {
     "extends": "../../configs/nyc.json"
