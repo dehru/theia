@@ -37,6 +37,8 @@ export class DocumentsMainImpl implements DocumentsMain {
     private modelToDispose = new Map<string, Disposable>();
     private modelIsSynced = new Map<string, boolean>();
 
+    protected saveTimeout = 1750;
+
     constructor(
         editorsAndDocuments: EditorsAndDocumentsMain,
         modelService: EditorModelService,
@@ -54,14 +56,15 @@ export class DocumentsMainImpl implements DocumentsMain {
             this.proxy.$acceptModelSaved(m.textEditorModel.uri);
         }));
         this.toDispose.push(modelService.onModelWillSave(onWillSaveModelEvent => {
-            onWillSaveModelEvent.waitUntil(new Promise<monaco.editor.IIdentifiedSingleEditOperation[]>(async resolve => {
-                const edits = await this.proxy.$acceptModelWillSave(onWillSaveModelEvent.model.textEditorModel.uri, onWillSaveModelEvent.reason);
+            onWillSaveModelEvent.waitUntil(new Promise<monaco.editor.IIdentifiedSingleEditOperation[]>(async (resolve, reject) => {
+                setTimeout(() => reject(new Error(`Aborted onWillSaveTextDocument-event after ${this.saveTimeout}ms`)), this.saveTimeout);
+                const edits = await this.proxy.$acceptModelWillSave(onWillSaveModelEvent.model.textEditorModel.uri, onWillSaveModelEvent.reason, this.saveTimeout);
                 const transformedEdits = edits.map((edit): monaco.editor.IIdentifiedSingleEditOperation =>
-                ({
-                    range: monaco.Range.lift(edit.range),
-                    text: edit.text!,
-                    forceMoveMarkers: edit.forceMoveMarkers
-                }));
+                    ({
+                        range: monaco.Range.lift(edit.range),
+                        text: edit.text!,
+                        forceMoveMarkers: edit.forceMoveMarkers
+                    }));
                 resolve(transformedEdits);
             }));
         }));

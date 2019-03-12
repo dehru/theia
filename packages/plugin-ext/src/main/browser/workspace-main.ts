@@ -154,7 +154,20 @@ export class WorkspaceMainImpl implements WorkspaceMain {
 
     async $startFileSearch(includePattern: string, excludePatternOrDisregardExcludes?: string | false,
         maxResults?: number, token?: theia.CancellationToken): Promise<UriComponents[]> {
-        const uriStrs = await this.fileSearchService.find(includePattern, { rootUris: this.roots.map(r => r.uri) });
+        const opts: FileSearchService.Options = { rootUris: this.roots.map(r => r.uri) };
+        if (typeof excludePatternOrDisregardExcludes === 'string') {
+            if (excludePatternOrDisregardExcludes === '') { // default excludes
+                opts.defaultIgnorePatterns = [];
+            } else {
+                opts.defaultIgnorePatterns = [excludePatternOrDisregardExcludes];
+            }
+        } else {
+            opts.defaultIgnorePatterns = undefined; // no excludes
+        }
+        if (typeof maxResults === 'number') {
+            opts.limit = maxResults;
+        }
+        const uriStrs = await this.fileSearchService.find(includePattern, opts);
         return uriStrs.map(uriStr => Uri.parse(uriStr));
     }
 

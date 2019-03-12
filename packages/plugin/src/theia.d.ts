@@ -157,12 +157,13 @@ declare module '@theia/plugin' {
         export let all: Plugin<any>[];
     }
 
+
     /**
-     * A command is a unique identifier of a function
-     * which can be executed by a user via a keyboard shortcut,
-     * a menu action or directly.
-     */
-    export interface Command {
+ * A command is a unique identifier of a function
+ * which can be executed by a user via a keyboard shortcut,
+ * a menu action or directly.
+ */
+    export interface CommandDescription {
         /**
          * A unique identifier of this command.
          */
@@ -172,29 +173,44 @@ declare module '@theia/plugin' {
          */
         label?: string;
         /**
-         * A tooltip for for command, when represented in the UI.
-         */
+          * A tooltip for for command, when represented in the UI.
+          */
         tooltip?: string;
         /**
          * An icon class of this command.
          */
         iconClass?: string;
+    }
+    /**
+     * Command represents a particular invocation of a registered command.
+     */
+    export interface Command {
+        /**
+         * The identifier of the actual command handler.
+         */
+        command?: string;
+        /**
+        * Title of the command invocation, like "Add local varible 'foo'".
+        */
+        title?: string;
+        /**
+          * A tooltip for for command, when represented in the UI.
+          */
+        tooltip?: string;
         /**
          * Arguments that the command handler should be
          * invoked with.
          */
         arguments?: any[];
 
-        // Title and command fields are needed to make Command object similar to Command from vscode API
-
         /**
-         * Title of the command, like "save".
+         * @deprecated use command instead
          */
-        title?: string;
+        id?: string;
         /**
-         * The identifier of the actual command handler.
+         * @deprecated use title instead
          */
-        command?: string;
+        label?: string;
     }
 
     /**
@@ -308,7 +324,7 @@ declare module '@theia/plugin' {
     }
 
     /**
-     * Pair if two positions.
+     * Pair of two positions.
      */
     export class Range {
         /**
@@ -1996,7 +2012,7 @@ declare module '@theia/plugin' {
          *
          * Throw if a command is already registered for the given command identifier.
          */
-        export function registerCommand(command: Command, handler?: (...args: any[]) => any, thisArg?: any): Disposable;
+        export function registerCommand(command: CommandDescription, handler?: (...args: any[]) => any, thisArg?: any): Disposable;
 
         /**
          * Register the given handler for the given command identifier.
@@ -3645,6 +3661,60 @@ declare module '@theia/plugin' {
         size: number;
     }
 
+	/**
+	 * A type that filesystem providers should use to signal errors.
+	 *
+	 * This class has factory methods for common error-cases, like `EntryNotFound` when
+	 * a file or folder doesn't exist, use them like so: `throw vscode.FileSystemError.EntryNotFound(someUri);`
+	 */
+    export class FileSystemError extends Error {
+
+		/**
+		 * Create an error to signal that a file or folder wasn't found.
+		 * @param messageOrUri Message or uri.
+		 */
+        static FileNotFound(messageOrUri?: string | Uri): FileSystemError;
+
+		/**
+		 * Create an error to signal that a file or folder already exists, e.g. when
+		 * creating but not overwriting a file.
+		 * @param messageOrUri Message or uri.
+		 */
+        static FileExists(messageOrUri?: string | Uri): FileSystemError;
+
+		/**
+		 * Create an error to signal that a file is not a folder.
+		 * @param messageOrUri Message or uri.
+		 */
+        static FileNotADirectory(messageOrUri?: string | Uri): FileSystemError;
+
+		/**
+		 * Create an error to signal that a file is a folder.
+		 * @param messageOrUri Message or uri.
+		 */
+        static FileIsADirectory(messageOrUri?: string | Uri): FileSystemError;
+
+		/**
+		 * Create an error to signal that an operation lacks required permissions.
+		 * @param messageOrUri Message or uri.
+		 */
+        static NoPermissions(messageOrUri?: string | Uri): FileSystemError;
+
+		/**
+		 * Create an error to signal that the file system is unavailable or too busy to
+		 * complete a request.
+		 * @param messageOrUri Message or uri.
+		 */
+        static Unavailable(messageOrUri?: string | Uri): FileSystemError;
+
+		/**
+		 * Creates a new filesystem error.
+		 *
+		 * @param messageOrUri Message or uri.
+		 */
+        constructor(messageOrUri?: string | Uri);
+    }
+
     /**
      * Enumeration of file change types.
      */
@@ -4012,7 +4082,7 @@ declare module '@theia/plugin' {
          * @return A thenable that resolves to an array of resource identifiers. Will return no results if no
          * [workspace folders](#workspace.workspaceFolders) are opened.
          */
-        export function findFiles(include: GlobPattern, exclude?: GlobPattern | undefined, maxResults?: number, token?: CancellationToken): PromiseLike<Uri[]>;
+        export function findFiles(include: GlobPattern, exclude?: GlobPattern | null, maxResults?: number, token?: CancellationToken): PromiseLike<Uri[]>;
 
         /**
          * Make changes to one or many resources or create, delete, and rename resources as defined by the given
@@ -4049,12 +4119,11 @@ declare module '@theia/plugin' {
         /**
          * Returns the [workspace folder](#WorkspaceFolder) that contains a given uri.
          * * returns `undefined` when the given uri doesn't match any workspace folder
-         * * returns the *input* when the given uri is a workspace folder itself
          *
          * @param uri An uri.
          * @return A workspace folder or `undefined`
          */
-        export function getWorkspaceFolder(uri: Uri): WorkspaceFolder | Uri | undefined;
+        export function getWorkspaceFolder(uri: Uri): WorkspaceFolder | undefined;
 
         /**
          * Returns a path that is relative to the workspace folder or folders.

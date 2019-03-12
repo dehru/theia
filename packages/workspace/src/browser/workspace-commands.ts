@@ -170,7 +170,8 @@ export class WorkspaceCommandContribution implements CommandContribution {
             execute: uri => this.getDirectory(uri).then(parent => {
                 if (parent) {
                     const parentUri = new URI(parent.uri);
-                    const vacantChildUri = FileSystemUtils.generateUniqueResourceURI(parentUri, parent, 'Untitled', '.txt');
+                    const { fileName, fileExtension } = this.getDefaultFileConfig();
+                    const vacantChildUri = FileSystemUtils.generateUniqueResourceURI(parentUri, parent, fileName, fileExtension);
                     const dialog = new SingleTextInputDialog({
                         title: 'New File',
                         initialValue: vacantChildUri.path.base,
@@ -344,6 +345,13 @@ export class WorkspaceCommandContribution implements CommandContribution {
     protected isWorkspaceRoot(uri: URI): boolean {
         const rootUris = new Set(this.workspaceService.tryGetRoots().map(root => root.uri));
         return rootUris.has(uri.toString());
+    }
+
+    protected getDefaultFileConfig(): { fileName: string, fileExtension: string } {
+        return {
+            fileName: 'Untitled',
+            fileExtension: '.txt'
+        };
     }
 
     protected async removeFolderFromWorkspace(uris: URI[]): Promise<void> {
